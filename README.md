@@ -93,9 +93,12 @@ GitHub リポジトリと連携することで、簡単にデプロイできま�
 | `LOG_DIR`                       | 通話ログ保存ディレクトリ（デフォルト: `call_logs`）                              |
 | `TWILIO_ACCOUNT_SID`            | Twilio アカウント SID（Twilio API 利用時に使用）                           |
 | `TWILIO_AUTH_TOKEN`             | Twilio Auth Token（Twilio API 利用時に使用）                          |
+| `SUPABASE_URL`                  | Supabase プロジェクト URL                                       |
+| `SUPABASE_SERVICE_ROLE_KEY`     | Supabase Service Role Key（RLS バイパス用）                     |
 
-※ 将来 SaaS 側（`ailuna-web` / Supabase）と連携する場合は、
-　テナント情報や店舗設定取得用の環境変数をここに追加していきます。
+※ `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` を設定すると、
+　着信番号（`profiles.phone_number`）に基づいて `user_prompts` から
+　店舗ごとの設定（挨拶文・事業内容）を動的に読み込みます。
 
 ---
 

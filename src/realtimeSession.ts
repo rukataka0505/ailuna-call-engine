@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import fs from 'fs/promises';
 import path from 'path';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
@@ -9,6 +10,7 @@ export interface RealtimeSessionOptions {
   streamSid: string;
   callSid: string;
   logFile: string;
+  toPhoneNumber?: string;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
 }
@@ -19,6 +21,7 @@ export interface RealtimeSessionOptions {
  */
 export class RealtimeSession {
   private ws?: WebSocket;
+  private supabase: SupabaseClient;
 
   private readonly options: RealtimeSessionOptions;
 
@@ -26,28 +29,87 @@ export class RealtimeSession {
   private isUserSpeaking = false;
   private turnCount = 0;
   private currentSystemPrompt: string = config.openAiRealtimeSystemPrompt;
+  private currentGreeting: string = 'ユーザーが電話に出ました。設定されたキャラクターになりきって、最初の挨拶を行ってください。';
   private isInitialGreetingSent = false;
 
   constructor(options: RealtimeSessionOptions) {
     this.options = options;
+    this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
   }
 
-  private async loadSystemPrompt(): Promise<string> {
+  private async loadSystemPrompt(): Promise<void> {
+    // 1. Supabase から設定を取得
+    if (this.options.toPhoneNumber) {
+      try {
+        console.log(`🔍 Looking up profile for phone number: ${this.options.toPhoneNumber}`);
+
+        // profiles テーブルから user_id を取得
+        const { data: profile, error: profileError } = await this.supabase
+          .from('profiles')
+          .select('id')
+          .eq('phone_number', this.options.toPhoneNumber)
+          .single();
+
+        if (profileError || !profile) {
+          console.warn('⚠️ Profile not found or error:', profileError?.message);
+        } else {
+          // user_prompts テーブルから設定を取得
+          const { data: promptData, error: promptError } = await this.supabase
+            .from('user_prompts')
+            .select('greeting_message, business_description')
+            .eq('user_id', profile.id)
+            .single();
+
+          if (promptError || !promptData) {
+            console.warn('⚠️ User prompt settings not found or error:', promptError?.message);
+          } else {
+            console.log('✨ Loaded dynamic settings from Supabase');
+
+            // プロンプト構築
+            if (promptData.business_description) {
+              this.currentSystemPrompt = `
+あなたは飲食店の電話応対AIエージェントです。
+以下の店舗情報に基づき、丁寧かつ簡潔に応対してください。
+
+【店舗情報】
+${promptData.business_description}
+
+【基本ルール】
+- 常に丁寧で簡潔な応答を行い、50文字以内でまとめてください。
+- 不確かな情報は推測せず、専門的な判断や確約は避け、必要に応じて確認を提案してください。
+`.trim();
+            }
+
+            // 挨拶文設定
+            if (promptData.greeting_message) {
+              this.currentGreeting = promptData.greeting_message;
+            }
+            return; // Supabase から取得できた場合はここで終了
+          }
+        }
+      } catch (err) {
+        console.error('❌ Failed to fetch from Supabase:', err);
+      }
+    }
+
+    // 2. フォールバック: system_prompt.md
     const mdPath = path.join(process.cwd(), 'system_prompt.md');
     try {
       const content = await fs.readFile(mdPath, 'utf-8');
       if (content) {
         console.log('📄 Loaded system prompt from system_prompt.md');
-        return content;
+        this.currentSystemPrompt = content;
+        return;
       }
     } catch (error) {
       console.warn('⚠️ Failed to load system_prompt.md, falling back to env var');
     }
-    return config.openAiRealtimeSystemPrompt;
+
+    // 3. フォールバック: 環境変数 (初期値のまま)
   }
 
   async connect(): Promise<void> {
-    this.currentSystemPrompt = await this.loadSystemPrompt();
+    await this.loadSystemPrompt();
     this.isInitialGreetingSent = false;
 
     return new Promise((resolve, reject) => {
@@ -112,7 +174,7 @@ export class RealtimeSession {
       item: {
         type: 'message',
         role: 'system',
-        content: [{ type: 'input_text', text: 'ユーザーが電話に出ました。設定されたキャラクターになりきって、最初の挨拶を行ってください。' }]
+        content: [{ type: 'input_text', text: this.currentGreeting }]
       }
     };
     this.sendJson(itemPayload);

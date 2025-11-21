@@ -27,7 +27,8 @@ const calls = new Map<string, CallContext>();
 app.post('/incoming-call-realtime', async (_req, res) => {
   console.log('📞 incoming call');
 
-  const wsUrl = buildWsUrl('/twilio-media');
+  const to = _req.body.To;
+  const wsUrl = buildWsUrl('/twilio-media', { to });
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -40,8 +41,12 @@ app.post('/incoming-call-realtime', async (_req, res) => {
 
 const wss = new WebSocketServer({ server, path: '/twilio-media' });
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, req) => {
   console.log('🔊 Twilio media WebSocket connected');
+
+  // クエリパラメータから to (着信番号) を取得
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const toPhoneNumber = url.searchParams.get('to') || undefined;
 
   socket.on('message', async (msg: WebSocket.RawData) => {
     try {
@@ -66,6 +71,7 @@ wss.on('connection', (socket) => {
           streamSid,
           callSid,
           logFile,
+          toPhoneNumber,
           onAudioToTwilio: (base64Mulaw) => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(
@@ -129,9 +135,14 @@ server.listen(config.port, () => {
   console.log(`🚀 Server listening on port ${config.port}`);
 });
 
-function buildWsUrl(pathname: string): string {
+function buildWsUrl(pathname: string, params?: Record<string, string>): string {
   const url = new URL(config.publicUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = pathname;
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v) url.searchParams.append(k, v);
+    });
+  }
   return url.toString();
 }
