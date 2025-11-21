@@ -95,7 +95,7 @@ export class RealtimeSession {
           create_response: true,
           interrupt_response: true,
         },
-        input_audio_format: 'pcm16',
+        input_audio_format: 'g711_ulaw',
         output_audio_format: 'g711_ulaw',
         voice: 'coral',
         input_audio_transcription: {
@@ -126,11 +126,11 @@ export class RealtimeSession {
     this.sendJson(responsePayload);
   }
 
-  sendAudio(pcm16_16k: Buffer) {
+  sendAudio(g711_ulaw: Buffer) {
     if (!this.connected || !this.ws) return;
     const payload = {
       type: 'input_audio_buffer.append',
-      audio: pcm16_16k.toString('base64'),
+      audio: g711_ulaw.toString('base64'),
     };
     this.sendJson(payload);
   }

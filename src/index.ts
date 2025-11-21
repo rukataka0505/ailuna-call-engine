@@ -5,7 +5,7 @@ import bodyParser from 'body-parser';
 import { config } from './config';
 import { createLogFilePath, writeLog } from './logging';
 import { TwilioMediaMessage } from './types';
-import { mulawToPcm16, resamplePcm16Mono } from './audioUtils';
+
 import { RealtimeSession } from './realtimeSession';
 
 const app = express();
@@ -96,9 +96,7 @@ wss.on('connection', (socket) => {
         const context = calls.get(data.streamSid);
         if (!context?.realtime) return;
         const mulawPayload = Buffer.from(data.media.payload, 'base64');
-        const pcm8k = mulawToPcm16(mulawPayload);
-        const pcm16k = resamplePcm16Mono(pcm8k, 8000, 16000);
-        context.realtime.sendAudio(pcm16k);
+        context.realtime.sendAudio(mulawPayload);
       }
 
       if (data.event === 'stop' && data.streamSid) {
