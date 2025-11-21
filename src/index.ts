@@ -32,12 +32,17 @@ app.post('/incoming-call-realtime', async (req, res) => {
   console.log('---------- DEBUG END   ----------');
 
   const to = req.body.To;
-  const wsUrl = buildWsUrl('/twilio-media', { to });
+  // URLパラメータへの付与を廃止 (Twilio <Parameter> タグを使用するため)
+  const wsUrl = buildWsUrl('/twilio-media');
   console.log('Generated WS URL:', wsUrl);
+
+  // <Parameter> タグで toPhoneNumber を渡す
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}" />
+    <Stream url="${wsUrl}">
+      <Parameter name="toPhoneNumber" value="${to}" />
+    </Stream>
   </Connect>
 </Response>`;
 
@@ -50,15 +55,19 @@ wss.on('connection', (socket, req) => {
   console.log('🔊 Twilio media WebSocket connected');
   console.log('Incoming WS Request URL:', req.url);
 
-  // クエリパラメータから to (着信番号) を取得
-  const url = new URL(req.url || '', `http://${req.headers.host}`);
-  const toPhoneNumber = url.searchParams.get('to') || undefined;
+  // クエリパラメータからの取得は廃止 (startイベントのcustomParametersから取得するため)
+  // const url = new URL(req.url || '', `http://${req.headers.host}`);
+  // const toPhoneNumber = url.searchParams.get('to') || undefined;
 
   socket.on('message', async (msg: WebSocket.RawData) => {
     try {
       const data = JSON.parse(msg.toString()) as TwilioMediaMessage;
       if (data.event === 'start' && data.start) {
-        const { streamSid, callSid } = data.start;
+        const { streamSid, callSid, customParameters } = data.start;
+        // customParameters から toPhoneNumber を取得
+        const toPhoneNumber = customParameters?.toPhoneNumber;
+
+        console.log('Start event received. Custom params:', customParameters);
         const logFile = createLogFilePath();
         const context: CallContext = {
           streamSid,

@@ -6,6 +6,10 @@ export interface TwilioMediaMessage {
     accountSid: string;
     callSid: string;
     tracks?: string[];
+    customParameters?: {
+      toPhoneNumber?: string;
+      [key: string]: string | undefined;
+    };
   };
   media?: {
     payload: string; // Base64-encoded mu-law audio at 8kHz mono
