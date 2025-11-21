@@ -33,6 +33,7 @@ app.post('/incoming-call-realtime', async (req, res) => {
 
   const to = req.body.To;
   const wsUrl = buildWsUrl('/twilio-media', { to });
+  console.log('Generated WS URL:', wsUrl);
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -47,6 +48,7 @@ const wss = new WebSocketServer({ server, path: '/twilio-media' });
 
 wss.on('connection', (socket, req) => {
   console.log('🔊 Twilio media WebSocket connected');
+  console.log('Incoming WS Request URL:', req.url);
 
   // クエリパラメータから to (着信番号) を取得
   const url = new URL(req.url || '', `http://${req.headers.host}`);
