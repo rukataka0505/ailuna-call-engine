@@ -283,8 +283,10 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 
 * ユーザーの発話は `conversation.item.input_audio_transcription.completed` イベント経由で取得し、
   `user_utterance` としてログに記録します。
-* 将来的に、この文字起こしをもとに Supabase へ保存し、
-  ダッシュボード側で一覧表示・要約表示することを想定しています。
+* ユーザーの発話は `conversation.item.input_audio_transcription.completed` イベント経由で取得し、
+  `user_utterance` としてログに記録します。
+* 取得した文字起こし（ユーザー発話・AI応答）は Supabase の `call_logs` テーブルへ保存され、
+  ダッシュボード側で一覧表示・要約表示に利用されます。
 
 ---
 
@@ -294,13 +296,12 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 次のような機能追加を行うことを想定しています。
 
 * Supabase の `user_prompts` / `profiles` から店舗ごとの設定を取得し、
-  Realtime の `instructions` / GREETING に反映する
+  Realtime の `instructions` / GREETING に反映する（実装済み）
 * 通話終了時に transcript / 要約を Supabase に保存し、
-  Web ダッシュボードで「いつ・誰から・どんな要件だったか」を一覧できるようにする
+  Web ダッシュボードで「いつ・誰から・どんな要件だったか」を一覧できるようにする（ログ保存は実装済み）
 * 通話時間・利用回数・トークン使用量などのメトリクスを集計し、請求や分析に活用する
 
-これらはまだ実装途中または未着手ですが、
-本 README に示したレイヤー構造とログ仕様をベースに順次拡張していきます。
+これらは順次拡張していきます。
 
 ### データベース (Supabase)
 

@@ -240,6 +240,22 @@ ${promptData.business_description}
 
       if (event.type === 'response.done') {
         const output = event.response?.output || [];
+        const textParts = output
+          .map((item: any) => item.content?.map((c: any) => c.text || c.transcript).join(''))
+          .filter((t: any) => t);
+        const text = textParts.join(' ');
+
+        if (text) {
+          this.turnCount++;
+          this.logEvent({
+            event: 'assistant_response',
+            role: 'assistant',
+            text,
+            turn: this.turnCount
+          });
+          this.transcript.push({ role: 'assistant', text, timestamp: new Date().toISOString() });
+          console.log(`🤖 AI応答 #${this.turnCount}: ${text}`);
+        }
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
@@ -264,8 +280,6 @@ ${promptData.business_description}
       console.error('Failed to parse realtime event', err, raw);
     }
   }
-
-
 
   private sendJson(payload: any) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
