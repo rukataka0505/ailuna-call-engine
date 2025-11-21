@@ -321,6 +321,7 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 - `transcript`: JSONB - 会話履歴（`[{role, text, timestamp}, ...]`）
 - `summary`: Text - 通話内容の要約（20文字以内のタイトル形式、OpenAI APIで自動生成）
 - `status`: Text - ステータス（`completed` 等）
+- `duration_seconds`: Integer - 通話時間（秒単位）。過去のログなど値がない場合は NULL または 0 となる場合があります。
 - `created_at`: Timestamp
 
 RLSポリシーにより、各店舗（ユーザー）は自分の店舗の通話ログのみ参照可能です。

@@ -38,8 +38,10 @@ export class RealtimeSession {
   private userId?: string;
   private callerNumber?: string;
   private transcript: { role: string; text: string; timestamp: string }[] = [];
+  private startTime: number;
 
   constructor(options: RealtimeSessionOptions) {
+    this.startTime = Date.now();
     this.options = options;
     this.callerNumber = options.fromPhoneNumber;
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
@@ -363,6 +365,10 @@ ${promptData.business_description}
 
     // Supabaseへ保存
     try {
+      const endTime = Date.now();
+      const durationSeconds = Math.round((endTime - this.startTime) / 1000);
+      console.log('⏱️ Call duration:', durationSeconds, 'seconds');
+
       const { error } = await this.supabase.from('call_logs').insert({
         user_id: this.userId,
         call_sid: this.options.callSid,
@@ -371,6 +377,7 @@ ${promptData.business_description}
         transcript: this.transcript,
         summary: summary,
         status: 'completed',
+        duration_seconds: durationSeconds,
         created_at: new Date().toISOString(),
       });
       if (error) {

@@ -8,6 +8,7 @@ create table public.call_logs (
   transcript jsonb null,
   summary text null,
   status text null,
+  duration_seconds integer default 0,
   created_at timestamp with time zone not null default now(),
   constraint call_logs_pkey primary key (id),
   constraint call_logs_user_id_fkey foreign key (user_id) references profiles (id) on delete set null
