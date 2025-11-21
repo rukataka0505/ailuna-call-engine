@@ -343,13 +343,17 @@ ${promptData.business_description}
           ],
 
           // 要約APIは Responses エンドポイント(Chat Completions) + max_completion_tokens を使う
-          max_completion_tokens: 50,
+          max_completion_tokens: 1000,
         });
+
+        console.log('🔍 OpenAI Summary Response:', JSON.stringify(completion, null, 2));
 
         const generatedSummary = completion.choices[0]?.message?.content?.trim();
         if (generatedSummary) {
           summary = generatedSummary;
           console.log(`✨ Generated summary: "${summary}"`);
+        } else {
+          console.warn('⚠️ Summary generation returned empty content.');
         }
       }
     } catch (err) {
