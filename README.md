@@ -90,6 +90,7 @@ GitHub リポジトリと連携することで、簡単にデプロイできま�
 | `OPENAI_API_KEY`                | OpenAI API キー                                                 |
 | `OPENAI_REALTIME_MODEL`         | 利用する Realtime モデル（例: `gpt-realtime`）                          |
 | `OPENAI_REALTIME_SYSTEM_PROMPT` | GPT Realtime に渡す電話応対AI向けベースプロンプト（`system_prompt.md` が無い場合に使用） |
+| `OPENAI_SUMMARY_MODEL`          | 通話要約生成に使用するモデル（デフォルト: `gpt-4o-mini`）                        |
 | `LOG_DIR`                       | 通話ログ保存ディレクトリ（デフォルト: `call_logs`）                              |
 | `TWILIO_ACCOUNT_SID`            | Twilio アカウント SID（Twilio API 利用時に使用）                           |
 | `TWILIO_AUTH_TOKEN`             | Twilio Auth Token（Twilio API 利用時に使用）                          |
@@ -156,7 +157,7 @@ GitHub リポジトリと連携することで、簡単にデプロイできま�
 
      * Twilio からの Media Streams イベント受付（開始／音声／終了）
      * Realtime への音声送信・イベント受信
-     * バージイン（お客様が話し始めたら AI 音声を即停止）
+     * バージイン（お客様が話し始めたら `input_audio_buffer.speech_started` イベントを検知して AI 音声を即停止し、Twilio のバッファもクリア）
      * セッションライフサイクル管理（通話開始〜終了）
 
 2. **シナリオ・設定レイヤー（Scenario / Configuration Layer）**
@@ -298,7 +299,9 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 * Supabase の `user_prompts` / `profiles` から店舗ごとの設定を取得し、
   Realtime の `instructions` / GREETING に反映する（実装済み）
 * 通話終了時に transcript / 要約を Supabase に保存し、
-  Web ダッシュボードで「いつ・誰から・どんな要件だったか」を一覧できるようにする（ログ保存は実装済み）
+  Web ダッシュボードで「いつ・誰から・どんな要件だったか」を一覧できるようにする（実装済み）
+  - 要約は OpenAI API（`OPENAI_SUMMARY_MODEL`）を使用して自動生成されます
+  - 20文字以内の簡潔なタイトル形式で、履歴一覧での表示に最適化されています
 * 通話時間・利用回数・トークン使用量などのメトリクスを集計し、請求や分析に活用する
 
 これらは順次拡張していきます。
@@ -308,7 +311,7 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 以下のテーブルを使用します。
 
 #### `call_logs` テーブル
-通話履歴を保存します。
+通話履歴を保存します。通話終了時に自動的に会話内容の要約も生成され、履歴一覧での表示に活用されます。
 
 - `id`: UUID (PK)
 - `user_id`: UUID (FK to `profiles.id`) - 店舗ID
@@ -316,6 +319,7 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 - `caller_number`: Text - 発信者番号
 - `recipient_number`: Text - 着信番号
 - `transcript`: JSONB - 会話履歴（`[{role, text, timestamp}, ...]`）
+- `summary`: Text - 通話内容の要約（20文字以内のタイトル形式、OpenAI APIで自動生成）
 - `status`: Text - ステータス（`completed` 等）
 - `created_at`: Timestamp
 

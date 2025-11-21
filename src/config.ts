@@ -18,6 +18,7 @@ export const config = {
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),
   openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'gpt-realtime'),
   openAiRealtimeSystemPrompt: requiredEnv('OPENAI_REALTIME_SYSTEM_PROMPT'),
+  openAiSummaryModel: requiredEnv('OPENAI_SUMMARY_MODEL', 'gpt-4o-mini'),
   logDir: requiredEnv('LOG_DIR', path.join(process.cwd(), 'call_logs')),
   twilioAuthToken: requiredEnv('TWILIO_AUTH_TOKEN', ''),
   twilioAccountSid: requiredEnv('TWILIO_ACCOUNT_SID', ''),

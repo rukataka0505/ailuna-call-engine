@@ -6,6 +6,7 @@ create table public.call_logs (
   caller_number text not null,
   recipient_number text not null,
   transcript jsonb null,
+  summary text null,
   status text null,
   created_at timestamp with time zone not null default now(),
   constraint call_logs_pkey primary key (id),

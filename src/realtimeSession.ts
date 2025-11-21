@@ -2,6 +2,7 @@ import WebSocket from 'ws';
 import fs from 'fs/promises';
 import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
@@ -23,6 +24,7 @@ export interface RealtimeSessionOptions {
 export class RealtimeSession {
   private ws?: WebSocket;
   private supabase: SupabaseClient;
+  private openai: OpenAI;
 
   private readonly options: RealtimeSessionOptions;
 
@@ -41,6 +43,7 @@ export class RealtimeSession {
     this.options = options;
     this.callerNumber = options.fromPhoneNumber;
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
+    this.openai = new OpenAI({ apiKey: config.openAiApiKey });
   }
 
   private async loadSystemPrompt(): Promise<void> {
@@ -75,7 +78,7 @@ export class RealtimeSession {
             if (promptData.business_description) {
               this.currentSystemPrompt = `
 あなたは電話応対AIエージェントです。
-以下の店舗情報に基づき、丁寧かつ簡潔に応対してください。
+以下の店舗情報に基づき、丁寧に応対してください。
 
 【店舗情報】
 ${promptData.business_description}
@@ -258,6 +261,13 @@ ${promptData.business_description}
         }
       }
 
+      if (event.type === 'input_audio_buffer.speech_started') {
+        console.log('🎤 ユーザー発話開始 (Barge-in)');
+        this.isUserSpeaking = true;
+        this.options.onClearTwilio(); // Twilioのバッファをクリア
+        this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
+      }
+
       if (event.type === 'input_audio_buffer.speech_stopped') {
         this.isUserSpeaking = false;
       }
@@ -296,11 +306,57 @@ ${promptData.business_description}
     await writeLog(this.options.logFile, event);
   }
 
+  /**
+   * トランスクリプトを要約生成用に整形する
+   * 例: "user: こんにちは\nassistant: お電話ありがとうございます..."
+   */
+  private formatTranscriptForSummary(): string {
+    return this.transcript
+      .map(item => `${item.role}: ${item.text}`)
+      .join('\n');
+  }
+
   async saveCallLogToSupabase() {
     if (!this.userId || !this.callerNumber) {
       console.warn('⚠️ Missing userId or callerNumber, skipping Supabase log save.');
       return;
     }
+
+    // 通話内容の要約を生成
+    let summary = '要約なし';
+    try {
+      if (this.transcript.length > 0) {
+        console.log('🤖 Generating call summary...');
+        const formattedTranscript = this.formatTranscriptForSummary();
+
+        const completion = await this.openai.chat.completions.create({
+          model: config.openAiSummaryModel,
+          messages: [
+            {
+              role: 'system',
+              content: '以下の通話内容を、履歴一覧に表示するために40文字以内に要約してください。要件や重要な情報を一目で把握できるようにしてください'
+            },
+            {
+              role: 'user',
+              content: formattedTranscript
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 50,
+        });
+
+        const generatedSummary = completion.choices[0]?.message?.content?.trim();
+        if (generatedSummary) {
+          summary = generatedSummary;
+          console.log(`✨ Generated summary: "${summary}"`);
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ Failed to generate summary, using default:', err);
+      // エラーが発生してもDB保存は継続する
+    }
+
+    // Supabaseへ保存
     try {
       const { error } = await this.supabase.from('call_logs').insert({
         user_id: this.userId,
@@ -308,6 +364,7 @@ ${promptData.business_description}
         caller_number: this.callerNumber,
         recipient_number: this.options.toPhoneNumber || '',
         transcript: this.transcript,
+        summary: summary,
         status: 'completed',
         created_at: new Date().toISOString(),
       });
