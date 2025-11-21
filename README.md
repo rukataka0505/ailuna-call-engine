@@ -54,6 +54,31 @@ Twilio Media Streams と OpenAI Realtime API を用いて、
 
 ---
 
+## デプロイ手順（Railway / Render 等）
+
+本番環境（PaaS）へのデプロイ手順です。
+GitHub リポジトリと連携することで、簡単にデプロイできます。
+
+### 1. リポジトリの準備
+このリポジトリを GitHub にプッシュします。
+
+### 2. PaaS へのデプロイ (例: Railway)
+1. Railway で「New Project」→「Deploy from GitHub repo」を選択します。
+2. このリポジトリを選択します。
+3. **Variables** (環境変数) 設定画面で、`.env.production.example` の内容を設定します。
+   - `PUBLIC_URL` には、PaaS から発行されたドメイン（例: `https://xxx.up.railway.app`）を設定してください。
+   - `PORT` は PaaS の仕様に従ってください（Railway は自動検出、Render は `PORT` 変数が必要な場合あり）。
+4. デプロイが完了するのを待ちます。
+
+### 3. Twilio の設定変更
+デプロイ完了後、Twilio の管理画面で Webhook URL を本番用に変更します。
+
+- **A CALL COMES IN**:
+  - URL: `[本番URL]/incoming-call-realtime`
+  - 例: `https://xxx.up.railway.app/incoming-call-realtime`
+
+---
+
 ## 環境変数
 
 `.env` に最低限次の値を設定します。
