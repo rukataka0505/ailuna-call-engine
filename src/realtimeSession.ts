@@ -169,12 +169,13 @@ ${promptData.business_description}
   }
 
   private sendInitialGreeting() {
+    const instructionText = `以下のテキストを、一言一句変更せず、そのまま読み上げてください：\n\n${this.currentGreeting}`;
     const itemPayload = {
       type: 'conversation.item.create',
       item: {
         type: 'message',
         role: 'system',
-        content: [{ type: 'input_text', text: this.currentGreeting }]
+        content: [{ type: 'input_text', text: instructionText }]
       }
     };
     this.sendJson(itemPayload);
