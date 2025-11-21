@@ -341,8 +341,9 @@ ${promptData.business_description}
               content: formattedTranscript
             }
           ],
-          temperature: 0.3,
-          max_tokens: 50,
+
+          // 要約APIは Responses エンドポイント(Chat Completions) + max_completion_tokens を使う
+          max_completion_tokens: 50,
         });
 
         const generatedSummary = completion.choices[0]?.message?.content?.trim();
