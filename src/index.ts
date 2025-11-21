@@ -23,11 +23,15 @@ interface CallContext {
 }
 
 const calls = new Map<string, CallContext>();
-
-app.post('/incoming-call-realtime', async (_req, res) => {
+app.post('/incoming-call-realtime', async (req, res) => {
   console.log('📞 incoming call');
 
-  const to = _req.body.To;
+  console.log('---------- DEBUG START ----------');
+  console.log('Request Body:', JSON.stringify(req.body, null, 2));
+  console.log('To Parameter:', req.body.To || req.body.to);
+  console.log('---------- DEBUG END   ----------');
+
+  const to = req.body.To;
   const wsUrl = buildWsUrl('/twilio-media', { to });
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
