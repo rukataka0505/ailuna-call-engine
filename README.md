@@ -1,4 +1,3 @@
-````markdown
 # 飲食店向け電話応答AIサーバー（AiLuna Call Engine）
 
 Twilio Media Streams と OpenAI Realtime API を用いて、  
@@ -32,7 +31,7 @@ Twilio Media Streams と OpenAI Realtime API を用いて、
    ```bash
    git clone https://github.com/rukataka0505/ailuna-call-engine.git
    cd ailuna-call-engine
-````
+   ```
 
 2. 依存関係をインストールします。
 
@@ -46,7 +45,7 @@ Twilio Media Streams と OpenAI Realtime API を用いて、
    cp .env.example .env
    ```
 
-4. 開発サーバーを起動します。
+4. 開発サーバーを起動します。（デフォルトでポート 3100 で起動します）
 
    ```bash
    npm run dev
@@ -85,12 +84,12 @@ GitHub リポジトリと連携することで、簡単にデプロイできま�
 
 | 変数名                             | 説明                                                            |
 | ------------------------------- | ------------------------------------------------------------- |
-| `PORT`                          | HTTP ポート番号（例: `3000`）                                         |
+| `PORT`                          | HTTP ポート番号（デフォルト: `3100`）                                         |
 | `PUBLIC_URL`                    | ngrok 等で公開されるベースURL（例: `https://xxxx.ngrok.io`）               |
 | `OPENAI_API_KEY`                | OpenAI API キー                                                 |
 | `OPENAI_REALTIME_MODEL`         | 利用する Realtime モデル（例: `gpt-realtime`）                          |
 | `OPENAI_REALTIME_SYSTEM_PROMPT` | GPT Realtime に渡す電話応対AI向けベースプロンプト（`system_prompt.md` が無い場合に使用） |
-| `OPENAI_SUMMARY_MODEL`          | 通話要約生成に使用するモデル（デフォルト: `gpt-4o-mini`）                        |
+| `OPENAI_SUMMARY_MODEL`          | 通話要約生成に使用するモデル（例: `gpt-5.1` / `gpt-4o-mini`）                        |
 | `LOG_DIR`                       | 通話ログ保存ディレクトリ（デフォルト: `call_logs`）                              |
 | `TWILIO_ACCOUNT_SID`            | Twilio アカウント SID（Twilio API 利用時に使用）                           |
 | `TWILIO_AUTH_TOKEN`             | Twilio Auth Token（Twilio API 利用時に使用）                          |
@@ -241,7 +240,13 @@ Twilio コンソールで、対象電話番号の設定を行います。
 
 ## 動作確認
 
-1. サーバーを起動し、ngrok などで `PUBLIC_URL` を取得して `.env` に反映します。
+1. サーバーを起動し、ngrok などでポート 3100 を公開して `PUBLIC_URL` を取得し、`.env` に反映します。
+
+   ```bash
+   # 3100番ポートを指定して起動
+   ngrok http 3100
+   ```
+
 2. Twilio の電話番号に発信します。
 3. AI が応答し、双方向音声で自然な会話ができることを確認します。
 4. `LOG_DIR`（デフォルト: `call_logs/`）ディレクトリに
@@ -326,6 +331,17 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 
 RLSポリシーにより、各店舗（ユーザー）は自分の店舗の通話ログのみ参照可能です。
 
-```
-::contentReference[oaicite:0]{index=0}
-```
+---
+
+## トラブルシューティング
+
+### 通話要約が生成されない・表示されない場合
+
+最新の推論モデル（`gpt-5.1` や `o1` シリーズ）を使用する場合、従来の `system` ロールの代わりに `developer` ロールを使用し、`max_tokens` の代わりに `max_completion_tokens` を指定する必要があります。
+本リポジトリでは最新の OpenAI SDK 仕様に合わせてこれらの対応を行っています。
+
+#### 確認ポイント
+* **要約モデル設定**: `.env` の `OPENAI_SUMMARY_MODEL` が正しく設定されているか（例: `gpt-5.1`）。
+* **SDKバージョン**: `openai` パッケージが最新（v4.70.0以上 または v6系）であることを確認してください。
+* **ログ確認**: 要約生成時のエラーや使用モデルはコンソールログに出力されます（`🤖 Generating call summary... (Model: ...)`）。
+* **パラメータ仕様**: `gpt-5.1` などの推論モデルは `developer` ロールを推奨するため、ソースコード（`src/realtimeSession.ts`）で `role: 'developer'` を使用しています。

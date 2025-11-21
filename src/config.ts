@@ -13,7 +13,7 @@ const requiredEnv = (key: string, defaultValue?: string): string => {
 };
 
 export const config = {
-  port: parseInt(requiredEnv('PORT', '3000'), 10),
+  port: parseInt(requiredEnv('PORT', '3100'), 10),
   publicUrl: requiredEnv('PUBLIC_URL'),
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),
   openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'gpt-realtime'),

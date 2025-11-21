@@ -328,21 +328,22 @@ ${promptData.business_description}
     let summary = '要約なし';
     try {
       if (this.transcript.length > 0) {
-        console.log('🤖 Generating call summary...');
+        console.log(`🤖 Generating call summary... (Model: ${config.openAiSummaryModel})`);
         const formattedTranscript = this.formatTranscriptForSummary();
 
         const completion = await this.openai.chat.completions.create({
           model: config.openAiSummaryModel,
           messages: [
             {
-              role: 'system',
-              content: '以下の通話内容を、履歴一覧に表示するために要約してください。要件や重要な情報を一目で把握できるようにしてください とくに重要な情報は最初にもってきてください'
+              role: 'developer',
+              content: '以下の通話内容を簡潔に要約した文章を作ってください。とくに要件や重要な情報は文の最初にもってきてください。 '
             },
             {
               role: 'user',
               content: formattedTranscript
             }
           ],
+
 
           // 要約APIは Responses エンドポイント(Chat Completions) + max_completion_tokens を使う
           max_completion_tokens: 1000,

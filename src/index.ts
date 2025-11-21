@@ -150,9 +150,32 @@ wss.on('connection', (socket, req) => {
   });
 });
 
-server.listen(config.port, () => {
+const listener = server.listen(config.port, () => {
   console.log(`🚀 Server listening on port ${config.port}`);
 });
+
+const gracefulShutdown = () => {
+  console.log('Received kill signal, shutting down gracefully');
+
+  // Close WebSocket connections to ensure fast shutdown
+  wss.clients.forEach((client) => {
+    client.terminate();
+  });
+
+  listener.close(() => {
+    console.log('Closed out remaining connections');
+    process.exit(0);
+  });
+
+  // Force close if not closed within 10s
+  setTimeout(() => {
+    console.error('Could not close connections in time, forcefully shutting down');
+    process.exit(1);
+  }, 10000);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 function buildWsUrl(pathname: string, params?: Record<string, string>): string {
   const url = new URL(config.publicUrl);
