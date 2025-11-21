@@ -29,7 +29,7 @@ export class RealtimeSession {
   private isUserSpeaking = false;
   private turnCount = 0;
   private currentSystemPrompt: string = config.openAiRealtimeSystemPrompt;
-  private currentGreeting: string = 'ユーザーが電話に出ました。設定されたキャラクターになりきって、最初の挨拶を行ってください。';
+  private currentGreeting: string = 'お電話ありがとうございます。';
   private isInitialGreetingSent = false;
 
   constructor(options: RealtimeSessionOptions) {
@@ -48,7 +48,6 @@ export class RealtimeSession {
           .from('profiles')
           .select('id')
           .eq('phone_number', this.options.toPhoneNumber)
-          .single();
 
         if (profileError || !profile) {
           console.warn('⚠️ Profile not found or error:', profileError?.message);
@@ -68,14 +67,14 @@ export class RealtimeSession {
             // プロンプト構築
             if (promptData.business_description) {
               this.currentSystemPrompt = `
-あなたは飲食店の電話応対AIエージェントです。
+あなたは電話応対AIエージェントです。
 以下の店舗情報に基づき、丁寧かつ簡潔に応対してください。
 
 【店舗情報】
 ${promptData.business_description}
 
 【基本ルール】
-- 常に丁寧で簡潔な応答を行い、50文字以内でまとめてください。
+- 丁寧で簡潔な応答を心がけてください。
 - 不確かな情報は推測せず、専門的な判断や確約は避け、必要に応じて確認を提案してください。
 `.trim();
             }
