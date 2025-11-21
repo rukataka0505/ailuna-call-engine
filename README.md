@@ -302,6 +302,24 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 これらはまだ実装途中または未着手ですが、
 本 README に示したレイヤー構造とログ仕様をベースに順次拡張していきます。
 
+### データベース (Supabase)
+
+以下のテーブルを使用します。
+
+#### `call_logs` テーブル
+通話履歴を保存します。
+
+- `id`: UUID (PK)
+- `user_id`: UUID (FK to `profiles.id`) - 店舗ID
+- `call_sid`: Text - Twilio Call SID
+- `caller_number`: Text - 発信者番号
+- `recipient_number`: Text - 着信番号
+- `transcript`: JSONB - 会話履歴（`[{role, text, timestamp}, ...]`）
+- `status`: Text - ステータス（`completed` 等）
+- `created_at`: Timestamp
+
+RLSポリシーにより、各店舗（ユーザー）は自分の店舗の通話ログのみ参照可能です。
+
 ```
 ::contentReference[oaicite:0]{index=0}
 ```

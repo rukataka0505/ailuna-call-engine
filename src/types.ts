@@ -8,6 +8,7 @@ export interface TwilioMediaMessage {
     tracks?: string[];
     customParameters?: {
       toPhoneNumber?: string;
+      fromPhoneNumber?: string;
       [key: string]: string | undefined;
     };
   };

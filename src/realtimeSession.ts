@@ -11,6 +11,7 @@ export interface RealtimeSessionOptions {
   callSid: string;
   logFile: string;
   toPhoneNumber?: string;
+  fromPhoneNumber?: string;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
 }
@@ -32,8 +33,13 @@ export class RealtimeSession {
   private currentGreeting: string = 'お電話ありがとうございます。';
   private isInitialGreetingSent = false;
 
+  private userId?: string;
+  private callerNumber?: string;
+  private transcript: { role: string; text: string; timestamp: string }[] = [];
+
   constructor(options: RealtimeSessionOptions) {
     this.options = options;
+    this.callerNumber = options.fromPhoneNumber;
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
   }
 
@@ -52,6 +58,7 @@ export class RealtimeSession {
         if (profileError || !profile || profile.length === 0) {
           console.warn('⚠️ Profile not found or error:', profileError?.message);
         } else {
+          this.userId = profile[0].id;
           // user_prompts テーブルから設定を取得
           const { data: promptData, error: promptError } = await this.supabase
             .from('user_prompts')
@@ -233,27 +240,6 @@ ${promptData.business_description}
 
       if (event.type === 'response.done') {
         const output = event.response?.output || [];
-        const textParts = output
-          .map((item: any) => item.content?.map((c: any) => c.text || c.transcript).join(''))
-          .filter((t: any) => t);
-        const text = textParts.join(' ');
-
-        if (text) {
-          this.turnCount++;
-          this.logEvent({
-            event: 'assistant_response',
-            role: 'assistant',
-            text,
-            turn: this.turnCount
-          });
-          console.log(`🤖 AI応答 #${this.turnCount}: ${text}`);
-        }
-      }
-
-      if (event.type === 'input_audio_buffer.speech_started') {
-        this.isUserSpeaking = true;
-        this.options.onClearTwilio();
-        this.logEvent({ event: 'user_utterance', text: '[speech detected]' });
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
@@ -270,6 +256,7 @@ ${promptData.business_description}
             text,
             turn: this.turnCount
           });
+          this.transcript.push({ role: 'user', text, timestamp: new Date().toISOString() });
           console.log(`🗣️ ユーザー発話 #${this.turnCount}: ${text}`);
         }
       }
@@ -295,9 +282,35 @@ ${promptData.business_description}
     await writeLog(this.options.logFile, event);
   }
 
+  async saveCallLogToSupabase() {
+    if (!this.userId || !this.callerNumber) {
+      console.warn('⚠️ Missing userId or callerNumber, skipping Supabase log save.');
+      return;
+    }
+    try {
+      const { error } = await this.supabase.from('call_logs').insert({
+        user_id: this.userId,
+        call_sid: this.options.callSid,
+        caller_number: this.callerNumber,
+        recipient_number: this.options.toPhoneNumber || '',
+        transcript: this.transcript,
+        status: 'completed',
+        created_at: new Date().toISOString(),
+      });
+      if (error) {
+        console.error('❌ Failed to save call log to Supabase:', error);
+      } else {
+        console.log('✅ Call log saved to Supabase');
+      }
+    } catch (err) {
+      console.error('❌ Error saving call log:', err);
+    }
+  }
+
   close() {
     if (this.ws) {
       this.ws.close();
     }
+    this.saveCallLogToSupabase();
   }
 }

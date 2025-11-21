@@ -32,6 +32,7 @@ app.post('/incoming-call-realtime', async (req, res) => {
   console.log('---------- DEBUG END   ----------');
 
   const to = req.body.To;
+  const from = req.body.From;
   // URLパラメータへの付与を廃止 (Twilio <Parameter> タグを使用するため)
   const wsUrl = buildWsUrl('/twilio-media');
   console.log('Generated WS URL:', wsUrl);
@@ -42,6 +43,7 @@ app.post('/incoming-call-realtime', async (req, res) => {
   <Connect>
     <Stream url="${wsUrl}">
       <Parameter name="toPhoneNumber" value="${to}" />
+      <Parameter name="fromPhoneNumber" value="${from}" />
     </Stream>
   </Connect>
 </Response>`;
@@ -64,8 +66,9 @@ wss.on('connection', (socket, req) => {
       const data = JSON.parse(msg.toString()) as TwilioMediaMessage;
       if (data.event === 'start' && data.start) {
         const { streamSid, callSid, customParameters } = data.start;
-        // customParameters から toPhoneNumber を取得
+        // customParameters から toPhoneNumber, fromPhoneNumber を取得
         const toPhoneNumber = customParameters?.toPhoneNumber;
+        const fromPhoneNumber = customParameters?.fromPhoneNumber;
 
         console.log('Start event received. Custom params:', customParameters);
         const logFile = createLogFilePath();
@@ -87,6 +90,7 @@ wss.on('connection', (socket, req) => {
           callSid,
           logFile,
           toPhoneNumber,
+          fromPhoneNumber,
           onAudioToTwilio: (base64Mulaw) => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(
