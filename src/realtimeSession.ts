@@ -49,14 +49,14 @@ export class RealtimeSession {
           .select('id')
           .eq('phone_number', this.options.toPhoneNumber)
 
-        if (profileError || !profile) {
+        if (profileError || !profile || profile.length === 0) {
           console.warn('⚠️ Profile not found or error:', profileError?.message);
         } else {
           // user_prompts テーブルから設定を取得
           const { data: promptData, error: promptError } = await this.supabase
             .from('user_prompts')
             .select('greeting_message, business_description')
-            .eq('user_id', profile.id)
+            .eq('user_id', profile[0].id)
             .single();
 
           if (promptError || !promptData) {
