@@ -13,6 +13,8 @@ const requiredEnv = (key: string, defaultValue?: string): string => {
 };
 
 export const config = {
+  // PORT: Cloud Run が自動的に注入する環境変数を優先
+  // ローカル開発時は未設定の場合のみ 3100 にフォールバック
   port: parseInt(requiredEnv('PORT', '3100'), 10),
   publicUrl: requiredEnv('PUBLIC_URL'),
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),

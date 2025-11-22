@@ -169,7 +169,7 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGci..."
 
 | 変数名 | 説明 | 例 | 備考 |
 |--------|------|-----|------|
-| `PORT` | サーバーポート番号 | `8080` | Cloud Run が自動設定するため通常は不要 |
+| `PORT` | サーバーポート番号 | `8080` | **Cloud Run が自動設定** - 手動設定不要。ローカル開発では未設定時に `3100` を使用 |
 | `PUBLIC_URL` | Cloud Run のドメイン | `https://ailuna-call-engine-xxx-an.a.run.app` | **デプロイ後に発行される URL を設定** |
 | `OPENAI_API_KEY` | OpenAI API キー | `sk-proj-xxx...` | **必須** |
 | `OPENAI_REALTIME_MODEL` | Realtime API モデル | `gpt-realtime` | **必須** |
@@ -249,8 +249,8 @@ https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/incoming-call-realtime
 
 | 変数名 | 説明 | デフォルト値 | 必須 |
 |--------|------|-------------|------|
-| `PORT` | HTTP ポート番号 | `3100` | ○ |
-| `PUBLIC_URL` | 公開ベース URL（ngrok または Railway） | - | ○ |
+| `PORT` | HTTP ポート番号（Cloud Run では自動設定、ローカル開発では未設定時に `3100` を使用） | `3100` | ○ |
+| `PUBLIC_URL` | 公開ベース URL（ngrok または Cloud Run） | - | ○ |
 
 ### OpenAI 設定
 
