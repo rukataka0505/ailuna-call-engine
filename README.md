@@ -53,52 +53,270 @@ Twilio Media Streams と OpenAI Realtime API を用いて、
 
 ---
 
-## デプロイ手順（Railway / Render 等）
+---
 
-本番環境（PaaS）へのデプロイ手順です。
-GitHub リポジトリと連携することで、簡単にデプロイできます。
+## デプロイ手順（Railway への本番デプロイ）
 
-### 1. リポジトリの準備
-このリポジトリを GitHub にプッシュします。
+本番環境では **Railway** を使用して `ailuna-call-engine` を常駐させ、ngrok に依存しない運用を行います。
 
-### 2. PaaS へのデプロイ (例: Railway)
-1. Railway で「New Project」→「Deploy from GitHub repo」を選択します。
-2. このリポジトリを選択します。
-3. **Variables** (環境変数) 設定画面で、`.env.production.example` の内容を設定します。
-   - `PUBLIC_URL` には、PaaS から発行されたドメイン（例: `https://xxx.up.railway.app`）を設定してください。
-   - `PORT` は PaaS の仕様に従ってください（Railway は自動検出、Render は `PORT` 変数が必要な場合あり）。
-4. デプロイが完了するのを待ちます。
+### 前提条件
 
-### 3. Twilio の設定変更
-デプロイ完了後、Twilio の管理画面で Webhook URL を本番用に変更します。
+- GitHub アカウント（このリポジトリを push 済み）
+- Railway アカウント（[railway.app](https://railway.app) で無料登録可能）
+- Twilio アカウントと電話番号
+- Supabase プロジェクト（通話ログ保存用）
+- OpenAI API キー
+
+### 1. Railway プロジェクトの作成
+
+1. [Railway ダッシュボード](https://railway.app/dashboard) にログインします
+2. 「New Project」をクリックします
+3. 「Deploy from GitHub repo」を選択します
+4. `ailuna-call-engine` リポジトリを選択します
+5. Railway が自動的にリポジトリを検出し、デプロイを開始します
+
+### 2. ビルド・起動コマンドの設定
+
+Railway は `package.json` の scripts を自動検出しますが、念のため以下を確認してください：
+
+- **Build Command**: `npm run build`
+- **Start Command**: `npm start`
+
+これらは `package.json` で既に定義されています：
+
+```json
+{
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  }
+}
+```
+
+### 3. 環境変数の設定
+
+Railway のダッシュボードで「Variables」タブを開き、以下の環境変数を設定します。  
+`.env.production.example` を参考にしてください。
+
+#### 必須環境変数一覧
+
+| 変数名 | 説明 | 例 | 備考 |
+|--------|------|-----|------|
+| `PORT` | サーバーポート番号 | `3100` | Railway が自動設定するため通常は不要 |
+| `PUBLIC_URL` | Railway のドメイン | `https://ailuna-call-engine-production.up.railway.app` | **デプロイ後に発行される URL を設定** |
+| `OPENAI_API_KEY` | OpenAI API キー | `sk-proj-xxx...` | **必須** |
+| `OPENAI_REALTIME_MODEL` | Realtime API モデル | `gpt-realtime` | **必須** |
+| `OPENAI_SUMMARY_MODEL` | 要約生成モデル | `gpt-4o-mini` | **必須** |
+| `OPENAI_REALTIME_SYSTEM_PROMPT` | システムプロンプト（フォールバック） | `"あなたは..."` | `system_prompt.md` が無い場合に使用 |
+| `LOG_DIR` | ログ保存ディレクトリ | `call_logs` | Railway は永続ストレージ無し、Supabase 保存を推奨 |
+| `TWILIO_ACCOUNT_SID` | Twilio アカウント SID | `ACxxxxxxxxxx` | **必須** |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token | `xxxxxxxxxx` | **必須** |
+| `SUPABASE_URL` | Supabase プロジェクト URL | `https://xxx.supabase.co` | **必須** - 通話ログ保存用 |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key | `eyJhbGci...` | **必須** - RLS バイパス用 |
+
+> [!IMPORTANT]
+> `PUBLIC_URL` は Railway デプロイ完了後に「Settings」→「Domains」で確認できる URL を設定してください。  
+> 例: `https://ailuna-call-engine-production.up.railway.app`
+
+### 4. デプロイの確認
+
+1. Railway が自動的にビルド・デプロイを実行します
+2. 「Deployments」タブでビルドログを確認します
+3. デプロイ成功後、「Settings」→「Domains」で公開 URL を確認します
+4. ヘルスチェックエンドポイントにアクセスして動作確認：
+   ```
+   https://{your-railway-domain}/health
+   ```
+   レスポンス例：
+   ```json
+   {"status":"ok","timestamp":"2025-11-22T08:00:00.000Z"}
+   ```
+
+### 5. Twilio の設定変更
+
+Railway デプロイ完了後、Twilio の Webhook URL を Railway のドメインに変更します。
+
+#### 5-1. Twilio Console にアクセス
+
+1. [Twilio Console](https://console.twilio.com/) にログインします
+2. 「Phone Numbers」→「Manage」→「Active numbers」を選択します
+3. AiLuna で使用する電話番号をクリックします
+
+#### 5-2. Webhook URL の更新
+
+「Voice Configuration」セクションで以下を設定します：
 
 - **A CALL COMES IN**:
-  - URL: `[本番URL]/incoming-call-realtime`
-  - 例: `https://xxx.up.railway.app/incoming-call-realtime`
+  - `Webhook` を選択
+  - URL: `https://{your-railway-domain}/incoming-call-realtime`
+  - HTTP Method: `POST`
+
+例：
+```
+https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
+```
+
+#### 5-3. 設定の保存
+
+「Save Configuration」をクリックして保存します。
+
+### 6. 動作確認
+
+1. Twilio の電話番号に発信します
+2. AI が応答し、双方向音声で会話できることを確認します
+3. Supabase の `call_logs` テーブルに通話ログが保存されていることを確認します
 
 ---
 
-## 環境変数
+## 環境変数の詳細
 
-`.env` に最低限次の値を設定します。
+`.env` に設定する環境変数の詳細です。ローカル開発用は `.env.example`、本番用は `.env.production.example` を参考にしてください。
 
-| 変数名                             | 説明                                                            |
-| ------------------------------- | ------------------------------------------------------------- |
-| `PORT`                          | HTTP ポート番号（デフォルト: `3100`）                                         |
-| `PUBLIC_URL`                    | ngrok 等で公開されるベースURL（例: `https://xxxx.ngrok.io`）               |
-| `OPENAI_API_KEY`                | OpenAI API キー                                                 |
-| `OPENAI_REALTIME_MODEL`         | 利用する Realtime モデル（例: `gpt-realtime`）                          |
-| `OPENAI_REALTIME_SYSTEM_PROMPT` | GPT Realtime に渡す電話応対AI向けベースプロンプト（`system_prompt.md` が無い場合に使用） |
-| `OPENAI_SUMMARY_MODEL`          | 通話要約生成に使用するモデル（例: `gpt-5.1` / `gpt-4o-mini`）                        |
-| `LOG_DIR`                       | 通話ログ保存ディレクトリ（デフォルト: `call_logs`）                              |
-| `TWILIO_ACCOUNT_SID`            | Twilio アカウント SID（Twilio API 利用時に使用）                           |
-| `TWILIO_AUTH_TOKEN`             | Twilio Auth Token（Twilio API 利用時に使用）                          |
-| `SUPABASE_URL`                  | Supabase プロジェクト URL                                       |
-| `SUPABASE_SERVICE_ROLE_KEY`     | Supabase Service Role Key（RLS バイパス用）                     |
+### サーバー設定
 
-※ `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` を設定すると、
-　着信番号（`profiles.phone_number`）に基づいて `user_prompts` から
-　店舗ごとの設定（挨拶文・事業内容）を動的に読み込みます。
+| 変数名 | 説明 | デフォルト値 | 必須 |
+|--------|------|-------------|------|
+| `PORT` | HTTP ポート番号 | `3100` | ○ |
+| `PUBLIC_URL` | 公開ベース URL（ngrok または Railway） | - | ○ |
+
+### OpenAI 設定
+
+| 変数名 | 説明 | デフォルト値 | 必須 |
+|--------|------|-------------|------|
+| `OPENAI_API_KEY` | OpenAI API キー | - | ○ |
+| `OPENAI_REALTIME_MODEL` | Realtime API モデル | `gpt-realtime` | ○ |
+| `OPENAI_REALTIME_SYSTEM_PROMPT` | システムプロンプト（フォールバック） | - | △ |
+| `OPENAI_SUMMARY_MODEL` | 通話要約生成モデル | `gpt-4o-mini` | ○ |
+
+> [!NOTE]
+> `system_prompt.md` ファイルが存在する場合、そちらが優先されます。  
+> `OPENAI_REALTIME_SYSTEM_PROMPT` はファイルが無い場合のフォールバックとして使用されます。
+
+### ログ設定
+
+| 変数名 | 説明 | デフォルト値 | 必須 |
+|--------|------|-------------|------|
+| `LOG_DIR` | 通話ログ保存ディレクトリ | `call_logs` | ○ |
+
+> [!WARNING]
+> Railway などのエフェメラル環境では、ファイルシステムへのログ保存は再起動時に消失します。  
+> 本番運用では Supabase への保存を主に使用してください。
+
+### Twilio 設定
+
+| 変数名 | 説明 | デフォルト値 | 必須 |
+|--------|------|-------------|------|
+| `TWILIO_ACCOUNT_SID` | Twilio アカウント SID | - | ○ |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token | - | ○ |
+
+### Supabase 設定
+
+| 変数名 | 説明 | デフォルト値 | 必須 |
+|--------|------|-------------|------|
+| `SUPABASE_URL` | Supabase プロジェクト URL | - | ○ |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key | - | ○ |
+
+> [!IMPORTANT]
+> `SUPABASE_SERVICE_ROLE_KEY` は RLS をバイパスするため、絶対に公開しないでください。  
+> Railway の環境変数として安全に管理してください。
+
+---
+
+## 運用モード（本番 vs 開発）
+
+### 本番モード（Railway）
+
+- **環境**: Railway 上で常時起動
+- **URL**: `https://{railway-domain}`
+- **Twilio 設定**: Railway の URL を向ける
+- **メリット**: 
+  - ngrok 不要
+  - 常時稼働
+  - 自動デプロイ（GitHub push で更新）
+- **用途**: 実際の店舗運用
+
+### 開発モード（ローカル + ngrok）
+
+- **環境**: ローカルマシンで `npm run dev`
+- **URL**: `https://{ngrok-domain}` (一時的)
+- **Twilio 設定**: ngrok の URL を向ける（テスト時のみ）
+- **メリット**:
+  - コード変更が即座に反映
+  - デバッグが容易
+- **用途**: 機能開発・テスト
+
+#### ローカル開発の手順
+
+1. サーバーを起動：
+   ```bash
+   npm run dev
+   ```
+
+2. ngrok で公開（別ターミナル）：
+   ```bash
+   ngrok http 3100
+   ```
+
+3. `.env` の `PUBLIC_URL` を ngrok の URL に更新：
+   ```
+   PUBLIC_URL=https://xxxx-xx-xx-xxx-xxx.ngrok-free.app
+   ```
+
+4. （必要に応じて）Twilio の Webhook URL を ngrok の URL に一時変更
+
+> [!CAUTION]
+> 開発終了後は、Twilio の Webhook URL を必ず Railway の URL に戻してください。  
+> ngrok の URL は一時的なものであり、ngrok を停止すると使用できなくなります。
+
+---
+
+## Railway デプロイのトラブルシューティング
+
+### ビルドが失敗する
+
+**症状**: Railway のビルドログにエラーが表示される
+
+**確認ポイント**:
+- `package.json` の `build` スクリプトが正しいか確認
+- TypeScript のコンパイルエラーがないか確認
+- ローカルで `npm run build` を実行してエラーを確認
+
+### サーバーが起動しない
+
+**症状**: デプロイ成功後、サービスが起動しない
+
+**確認ポイント**:
+- 環境変数が全て設定されているか確認（特に `OPENAI_API_KEY`, `SUPABASE_URL` など必須項目）
+- Railway のログで起動エラーを確認
+- `PORT` 環境変数が Railway の動的ポートと競合していないか確認（通常は自動設定されるため不要）
+
+### Twilio から接続できない
+
+**症状**: 電話をかけても AI が応答しない
+
+**確認ポイント**:
+- Twilio の Webhook URL が正しい Railway のドメインを向いているか確認
+- `PUBLIC_URL` 環境変数が Railway のドメインと一致しているか確認
+- Railway のログで Twilio からのリクエストが届いているか確認
+- ヘルスチェックエンドポイント (`/health`) にアクセスできるか確認
+
+### 通話ログが保存されない
+
+**症状**: 通話は成功するが、Supabase にログが保存されない
+
+**確認ポイント**:
+- `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` が正しく設定されているか確認
+- Supabase の `call_logs` テーブルが存在するか確認（`sql/call_logs.sql` を実行）
+- Railway のログで Supabase 接続エラーが出ていないか確認
+
+### ログの確認方法
+
+Railway のログを確認するには：
+
+1. Railway ダッシュボードで該当プロジェクトを開く
+2. 「Deployments」タブを選択
+3. 最新のデプロイメントをクリック
+4. 「View Logs」でリアルタイムログを確認
 
 ---
 
@@ -226,13 +444,18 @@ GitHub リポジトリと連携することで、簡単にデプロイできま�
 
 ## Twilio 側の設定
 
-Twilio コンソールで、対象電話番号の設定を行います。
+> [!NOTE]
+> Twilio の詳細な設定手順は、上記の「デプロイ手順（Railway への本番デプロイ）」→「5. Twilio の設定変更」セクションを参照してください。
 
-* **A CALL COMES IN**
+本番運用では Railway のドメインを、開発時は ngrok のドメインを Twilio の Webhook URL に設定します。
 
-  * `Webhook` にチェックを入れ、
-  * URL に `https://{ngrokドメイン}/incoming-call-realtime` を設定します。
-* 該当電話番号で Media Streams が利用可能であることを確認してください。
+### 本番環境（Railway）
+
+- **A CALL COMES IN**: `https://{railway-domain}/incoming-call-realtime`
+
+### 開発環境（ローカル + ngrok）
+
+- **A CALL COMES IN**: `https://{ngrok-domain}/incoming-call-realtime`
 
 ※ Media Streams の有効化手順は Twilio の公式ドキュメントを参照してください。
 
@@ -240,17 +463,32 @@ Twilio コンソールで、対象電話番号の設定を行います。
 
 ## 動作確認
 
-1. サーバーを起動し、ngrok などでポート 3100 を公開して `PUBLIC_URL` を取得し、`.env` に反映します。
+### 本番環境（Railway）での確認
 
+1. Railway デプロイが完了していることを確認
+2. ヘルスチェックエンドポイントにアクセス: `https://{railway-domain}/health`
+3. Twilio の電話番号に発信
+4. AI が応答し、双方向音声で自然な会話ができることを確認
+5. Supabase の `call_logs` テーブルに通話ログが保存されていることを確認
+
+### 開発環境（ローカル）での確認
+
+1. サーバーを起動:
    ```bash
-   # 3100番ポートを指定して起動
+   npm run dev
+   ```
+
+2. ngrok でポート 3100 を公開:
+   ```bash
    ngrok http 3100
    ```
 
-2. Twilio の電話番号に発信します。
-3. AI が応答し、双方向音声で自然な会話ができることを確認します。
-4. `LOG_DIR`（デフォルト: `call_logs/`）ディレクトリに
-   `call_YYYYMMDD_HHmmss_xxx.ndjson` 形式で会話ログが保存されていることを確認します。
+3. `.env` の `PUBLIC_URL` を ngrok の URL に更新
+
+4. Twilio の電話番号に発信して動作確認
+
+5. `LOG_DIR`（デフォルト: `call_logs/`）ディレクトリに  
+   `call_YYYYMMDD_HHmmss_xxx.ndjson` 形式で会話ログが保存されていることを確認
 
 ---
 

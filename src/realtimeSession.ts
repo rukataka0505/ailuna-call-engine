@@ -80,9 +80,9 @@ export class RealtimeSession {
             if (promptData.business_description) {
               this.currentSystemPrompt = `
 あなたは電話応対AIエージェントです。
-以下の店舗情報に基づき、丁寧に応対してください。
+以下の企業情報に基づき、丁寧に応対してください。
 
-【店舗情報】
+【企業情報】
 ${promptData.business_description}
 
 【基本ルール】

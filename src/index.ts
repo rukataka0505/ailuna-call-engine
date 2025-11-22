@@ -23,6 +23,12 @@ interface CallContext {
 }
 
 const calls = new Map<string, CallContext>();
+
+// Health check endpoint for Railway monitoring
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.post('/incoming-call-realtime', async (req, res) => {
   console.log('📞 incoming call');
 
