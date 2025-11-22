@@ -151,7 +151,7 @@ gcloud run services update ailuna-call-engine \
 PUBLIC_URL=https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app,\
 OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx,\
 OPENAI_REALTIME_MODEL=gpt-realtime,\
-OPENAI_SUMMARY_MODEL=gpt-4o-mini,\
+OPENAI_SUMMARY_MODEL=gpt-5-mini,\
 OPENAI_REALTIME_SYSTEM_PROMPT=あなたは飲食店の電話応対AIエージェントです。,\
 LOG_DIR=call_logs,\
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxx,\
@@ -517,36 +517,49 @@ gcloud run services logs read ailuna-call-engine \
 
 2. **シナリオ・設定レイヤー（Scenario / Configuration Layer）**
 
-   * 役割：「この店舗はどう応対するか」を決める頭脳
-   * 主な責務：
+   * 役割:「この店舗はどう応対するか」を決める頭脳
+   * 主な責務:
 
-     * ベースのシステムプロンプト（`system_prompt.md` など）
-     * 将来の店舗ごとの設定（挨拶文・事業内容・予約ポリシー等）
+     * ベースのシステムプロンプト(`system_prompt.md` など)
+     * 将来の店舗ごとの設定(挨拶文・事業内容・予約ポリシー等)
        を統合し、Realtime 用の `instructions` と最初の挨拶文 `greeting` を生成する。
    * 現時点では主に `system_prompt.md` ベースで動作し、
      今後 Supabase `user_prompts` と連携することを想定しています。
 
-3. **ログ・分析レイヤー（Logging / Analytics Layer）**
+3. **ログ・分析レイヤー(Logging / Analytics Layer)**
 
-   * 役割：あとから振り返るための記録、および将来の要約・分析機能の土台
-   * 主な責務：
+   * 役割:あとから振り返るための記録、および将来の要約・分析機能の土台
+   * 主な責務:
 
      * NDJSON 形式でのイベントログ出力
      * callSid / streamSid 単位での通話ログ管理
      * 将来、Supabase などへの保存・要約生成を行うための拡張ポイント
+
+### セキュリティ
+
+#### サブスクリプション(課金)ガード
+
+通話セッション開始時に、ユーザーのサブスクリプション状態を自動的に検証します。
+
+* **検証タイミング**: `loadSystemPrompt` メソッド内で、Supabase の `profiles` テーブルから `is_subscribed` カラムを取得
+* **拒否条件**: `is_subscribed` が `false` または `null` の場合、通話を拒否
+* **動作**: エラーをスローし、WebSocket 接続を確立せずにセッションを終了
+* **ログ出力**: 拒否された通話は警告ログに記録されます(例: `🚫 User {id} is not subscribed. Rejecting call.`)
+
+これにより、サブスクリプションが無効なユーザーからの通話は、AI の挨拶が送信される前に自動的にブロックされます。
 
 ---
 
 ## 音声パイプライン
 
 本サーバーでは、**TwilioとOpenAI Realtime API間を G.711 μ-law 8kHz で統一**しています。
-サーバー内部でのトランスコード（変換）やリサンプリングは行わず、音声をそのまま転送することで低遅延を実現しています。
+サーバー内部でのトランスコード(変換)やリサンプリングは行わず、音声をそのまま転送することで低遅延を実現しています。
 
-* Twilio Media Streams からの入力：
-  * フォーマット：μ-law 8kHz mono
-* サーバー内部：
-  * 変換なし（パススルー）
-* Realtime API とのやり取り：
+* Twilio Media Streams からの入力:
+  * フォーマット:μ-law 8kHz mono
+* サーバー内部:
+  * 変換なし(パススルー)
+* Realtime API とのやり取り:
   * `input_audio_format`: `g711_ulaw`
   * `output_audio_format`: `g711_ulaw`
 
@@ -710,6 +723,15 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
 - `created_at`: Timestamp
 
 RLSポリシーにより、各店舗（ユーザー）は自分の店舗の通話ログのみ参照可能です。
+
+#### `profiles` テーブル（参照のみ）
+ユーザー（店舗）のプロファイル情報を管理します。通話エンジンは以下のカラムを参照します。
+
+- `id`: UUID (PK) - ユーザーID
+- `phone_number`: Text - 店舗の電話番号（通話の宛先番号と照合）
+- `is_subscribed`: Boolean - サブスクリプション状態（`true`: 有効, `false`: 無効）
+
+通話開始時に `phone_number` でプロファイルを検索し、`is_subscribed` が `false` の場合は通話を拒否します。
 
 ---
 

@@ -54,16 +54,24 @@ export class RealtimeSession {
       try {
         console.log(`🔍 Looking up profile for phone number: ${this.options.toPhoneNumber}`);
 
-        // profiles テーブルから user_id を取得
+        // profiles テーブルから user_id と is_subscribed を取得
         const { data: profile, error: profileError } = await this.supabase
           .from('profiles')
-          .select('id')
+          .select('id, is_subscribed')
           .eq('phone_number', this.options.toPhoneNumber)
 
         if (profileError || !profile || profile.length === 0) {
           console.warn('⚠️ Profile not found or error:', profileError?.message);
         } else {
           this.userId = profile[0].id;
+
+          // サブスクリプション状態を確認
+          if (!profile[0].is_subscribed) {
+            console.warn(`🚫 User ${this.userId} is not subscribed. Rejecting call.`);
+            throw new Error('User subscription is not active. Call rejected.');
+          }
+
+          console.log(`✅ User ${this.userId} subscription verified.`);
           // user_prompts テーブルから設定を取得
           const { data: promptData, error: promptError } = await this.supabase
             .from('user_prompts')
