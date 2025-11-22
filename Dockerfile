@@ -25,8 +25,9 @@ RUN npm ci --only=production
 # Copy built assets from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Expose the port the app runs on
-EXPOSE 3000
+# Expose the port the app runs on (Cloud Run default: 8080)
+# Note: Actual port is determined by PORT environment variable at runtime
+EXPOSE 8080
 
 # Start the application
 CMD ["npm", "start"]

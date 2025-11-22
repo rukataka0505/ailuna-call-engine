@@ -17,10 +17,17 @@ Twilio Media Streams と OpenAI Realtime API を用いて、
 
 ## 前提条件
 
+### ローカル開発
 - Node.js (LTS) / npm
 - OpenAI API キー
 - Twilio アカウントと電話番号（音声通話有効・Media Streams 利用可能）
-- ngrok などの HTTPS トンネルツール
+- ngrok などの HTTPS トンネルツール（開発時のみ）
+
+### 本番環境（Cloud Run）
+- Google Cloud Platform アカウント
+- gcloud CLI（ローカルにインストール＆認証済み）
+- Docker（ローカルでのビルド確認用）
+- Supabase プロジェクト（通話ログ保存用）
 
 ---
 
@@ -55,77 +62,135 @@ Twilio Media Streams と OpenAI Realtime API を用いて、
 
 ---
 
-## デプロイ手順（Railway への本番デプロイ）
+## デプロイ手順（Google Cloud Run への本番デプロイ）
 
-本番環境では **Railway** を使用して `ailuna-call-engine` を常駐させ、ngrok に依存しない運用を行います。
+本番環境では **Google Cloud Run（東京リージョン）** を使用して `ailuna-call-engine` を常駐させます。
 
 ### 前提条件
 
-- GitHub アカウント（このリポジトリを push 済み）
-- Railway アカウント（[railway.app](https://railway.app) で無料登録可能）
+- Google Cloud Platform アカウント
+- GCP プロジェクト作成済み
+- 以下の API が有効化されていること：
+  - Cloud Run API
+  - Cloud Build API
+  - Artifact Registry API
+- `gcloud` CLI がローカルにインストール＆認証済み
 - Twilio アカウントと電話番号
 - Supabase プロジェクト（通話ログ保存用）
 - OpenAI API キー
 
-### 1. Railway プロジェクトの作成
+### 1. GCP プロジェクトの準備
 
-1. [Railway ダッシュボード](https://railway.app/dashboard) にログインします
-2. 「New Project」をクリックします
-3. 「Deploy from GitHub repo」を選択します
-4. `ailuna-call-engine` リポジトリを選択します
-5. Railway が自動的にリポジトリを検出し、デプロイを開始します
+#### 1-1. プロジェクトの設定
 
-### 2. ビルド・起動コマンドの設定
+```bash
+# プロジェクト ID を設定（既存のプロジェクトを使用）
+gcloud config set project YOUR_PROJECT_ID
 
-Railway は `package.json` の scripts を自動検出しますが、念のため以下を確認してください：
-
-- **Build Command**: `npm run build`
-- **Start Command**: `npm start`
-
-これらは `package.json` で既に定義されています：
-
-```json
-{
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js"
-  }
-}
+# リージョンを東京に設定
+gcloud config set run/region asia-northeast1
 ```
+
+#### 1-2. 必要な API の有効化
+
+```bash
+gcloud services enable run.googleapis.com
+gcloud services enable cloudbuild.googleapis.com
+gcloud services enable artifactregistry.googleapis.com
+```
+
+### 2. コンテナのビルドとデプロイ
+
+#### 2-1. ローカルでのビルド確認（推奨）
+
+デプロイ前に、ローカルで Docker イメージがビルドできることを確認します：
+
+```bash
+# プロジェクトルートで実行
+docker build -t ailuna-call-engine .
+```
+
+#### 2-2. Cloud Run へのデプロイ
+
+ソースコードから直接ビルド＆デプロイする方法（推奨）：
+
+```bash
+gcloud run deploy ailuna-call-engine \
+  --source . \
+  --region asia-northeast1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --timeout 3600 \
+  --memory 512Mi \
+  --cpu 1 \
+  --min-instances 0 \
+  --max-instances 10
+```
+
+**オプションの説明**：
+- `--source .`: カレントディレクトリのソースコードを使用
+- `--region asia-northeast1`: 東京リージョン
+- `--allow-unauthenticated`: 認証なしでアクセス可能（Twilio からの Webhook 用）
+- `--timeout 3600`: タイムアウト 60 分（長時間通話対応）
+- `--memory 512Mi`: メモリ 512MB
+- `--min-instances 0`: アイドル時はインスタンス 0（コスト削減）
+- `--max-instances 10`: 最大 10 インスタンス
+
+> [!TIP]
+> デプロイ完了後、Cloud Run の URL が表示されます。この URL を控えておいてください。  
+> 例: `https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app`
 
 ### 3. 環境変数の設定
 
-Railway のダッシュボードで「Variables」タブを開き、以下の環境変数を設定します。  
-`.env.production.example` を参考にしてください。
+`.env.cloudrun.example` を参考に、以下のコマンドで環境変数を設定します：
+
+```bash
+gcloud run services update ailuna-call-engine \
+  --region asia-northeast1 \
+  --set-env-vars "\
+PUBLIC_URL=https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app,\
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx,\
+OPENAI_REALTIME_MODEL=gpt-realtime,\
+OPENAI_SUMMARY_MODEL=gpt-4o-mini,\
+OPENAI_REALTIME_SYSTEM_PROMPT=あなたは飲食店の電話応対AIエージェントです。,\
+LOG_DIR=call_logs,\
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxx,\
+TWILIO_AUTH_TOKEN=xxxxxxxxxx,\
+SUPABASE_URL=https://xxxxxxxxxxxxxxxx.supabase.co,\
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGci..."
+```
+
+> [!IMPORTANT]
+> - `PUBLIC_URL` には、手順 2-2 で発行された Cloud Run の URL を設定してください
+> - 環境変数が多い場合は、Cloud Console の GUI から設定することも可能です
+> - `SUPABASE_SERVICE_ROLE_KEY` は絶対に公開しないでください
 
 #### 必須環境変数一覧
 
 | 変数名 | 説明 | 例 | 備考 |
 |--------|------|-----|------|
-| `PORT` | サーバーポート番号 | `3100` | Railway が自動設定するため通常は不要 |
-| `PUBLIC_URL` | Railway のドメイン | `https://ailuna-call-engine-production.up.railway.app` | **デプロイ後に発行される URL を設定** |
+| `PORT` | サーバーポート番号 | `8080` | Cloud Run が自動設定するため通常は不要 |
+| `PUBLIC_URL` | Cloud Run のドメイン | `https://ailuna-call-engine-xxx-an.a.run.app` | **デプロイ後に発行される URL を設定** |
 | `OPENAI_API_KEY` | OpenAI API キー | `sk-proj-xxx...` | **必須** |
 | `OPENAI_REALTIME_MODEL` | Realtime API モデル | `gpt-realtime` | **必須** |
 | `OPENAI_SUMMARY_MODEL` | 要約生成モデル | `gpt-4o-mini` | **必須** |
 | `OPENAI_REALTIME_SYSTEM_PROMPT` | システムプロンプト（フォールバック） | `"あなたは..."` | `system_prompt.md` が無い場合に使用 |
-| `LOG_DIR` | ログ保存ディレクトリ | `call_logs` | Railway は永続ストレージ無し、Supabase 保存を推奨 |
+| `LOG_DIR` | ログ保存ディレクトリ | `call_logs` | Cloud Run は永続ストレージ無し、Supabase 保存を推奨 |
 | `TWILIO_ACCOUNT_SID` | Twilio アカウント SID | `ACxxxxxxxxxx` | **必須** |
 | `TWILIO_AUTH_TOKEN` | Twilio Auth Token | `xxxxxxxxxx` | **必須** |
 | `SUPABASE_URL` | Supabase プロジェクト URL | `https://xxx.supabase.co` | **必須** - 通話ログ保存用 |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key | `eyJhbGci...` | **必須** - RLS バイパス用 |
 
-> [!IMPORTANT]
-> `PUBLIC_URL` は Railway デプロイ完了後に「Settings」→「Domains」で確認できる URL を設定してください。  
-> 例: `https://ailuna-call-engine-production.up.railway.app`
-
 ### 4. デプロイの確認
 
-1. Railway が自動的にビルド・デプロイを実行します
-2. 「Deployments」タブでビルドログを確認します
-3. デプロイ成功後、「Settings」→「Domains」で公開 URL を確認します
-4. ヘルスチェックエンドポイントにアクセスして動作確認：
+1. Cloud Run のデプロイが成功したことを確認：
+   ```bash
+   gcloud run services describe ailuna-call-engine --region asia-northeast1
    ```
-   https://{your-railway-domain}/health
+
+2. ヘルスチェックエンドポイントにアクセスして動作確認：
+   ```bash
+   curl https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/health
    ```
    レスポンス例：
    ```json
@@ -134,7 +199,7 @@ Railway のダッシュボードで「Variables」タブを開き、以下の環
 
 ### 5. Twilio の設定変更
 
-Railway デプロイ完了後、Twilio の Webhook URL を Railway のドメインに変更します。
+Cloud Run デプロイ完了後、Twilio の Webhook URL を Cloud Run のドメインに変更します。
 
 #### 5-1. Twilio Console にアクセス
 
@@ -148,13 +213,17 @@ Railway デプロイ完了後、Twilio の Webhook URL を Railway のドメイ�
 
 - **A CALL COMES IN**:
   - `Webhook` を選択
-  - URL: `https://{your-railway-domain}/incoming-call-realtime`
+  - URL: `https://{your-cloudrun-url}/incoming-call-realtime`
   - HTTP Method: `POST`
 
 例：
 ```
-https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
+https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/incoming-call-realtime
 ```
+
+> [!NOTE]
+> `/incoming-call-realtime` エンドポイントが返す TwiML 内の `<Stream url>` は、
+> `PUBLIC_URL` 環境変数から自動的に `wss://{cloud-run-url}/twilio-media` を生成します。
 
 #### 5-3. 設定の保存
 
@@ -165,6 +234,10 @@ https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
 1. Twilio の電話番号に発信します
 2. AI が応答し、双方向音声で会話できることを確認します
 3. Supabase の `call_logs` テーブルに通話ログが保存されていることを確認します
+4. Cloud Run のログを確認：
+   ```bash
+   gcloud run services logs read ailuna-call-engine --region asia-northeast1 --limit 50
+   ```
 
 ---
 
@@ -224,16 +297,20 @@ https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
 
 ## 運用モード（本番 vs 開発）
 
-### 本番モード（Railway）
+### 本番モード（Google Cloud Run）
 
-- **環境**: Railway 上で常時起動
-- **URL**: `https://{railway-domain}`
-- **Twilio 設定**: Railway の URL を向ける
+- **環境**: Cloud Run（東京リージョン）上で常時起動
+- **URL**: `https://{cloud-run-url}`
+- **Twilio 設定**: Cloud Run の URL を向ける
 - **メリット**: 
   - ngrok 不要
-  - 常時稼働
-  - 自動デプロイ（GitHub push で更新）
+  - 自動スケーリング（通話数に応じて自動調整）
+  - 高可用性（Google のインフラ）
+  - `gcloud run deploy` で簡単に更新可能
 - **用途**: 実際の店舗運用
+- **注意点**:
+  - WebSocket 接続時間分課金されるため、通話が多い場合は料金に注意
+  - `system_prompt.md` の変更には再デプロイが必要
 
 ### 開発モード（ローカル + ngrok）
 
@@ -243,6 +320,7 @@ https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
 - **メリット**:
   - コード変更が即座に反映
   - デバッグが容易
+  - `system_prompt.md` の変更が即座に反映（サーバー再起動不要）
 - **用途**: 機能開発・テスト
 
 #### ローカル開発の手順
@@ -265,40 +343,58 @@ https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
 4. （必要に応じて）Twilio の Webhook URL を ngrok の URL に一時変更
 
 > [!CAUTION]
-> 開発終了後は、Twilio の Webhook URL を必ず Railway の URL に戻してください。  
+> 開発終了後は、Twilio の Webhook URL を必ず Cloud Run の URL に戻してください。  
 > ngrok の URL は一時的なものであり、ngrok を停止すると使用できなくなります。
 
 ---
 
-## Railway デプロイのトラブルシューティング
+## Cloud Run デプロイのトラブルシューティング
 
 ### ビルドが失敗する
 
-**症状**: Railway のビルドログにエラーが表示される
+**症状**: Cloud Build のログにエラーが表示される
 
 **確認ポイント**:
 - `package.json` の `build` スクリプトが正しいか確認
 - TypeScript のコンパイルエラーがないか確認
-- ローカルで `npm run build` を実行してエラーを確認
+- ローカルで `docker build -t ailuna-call-engine .` を実行してエラーを確認
+- Cloud Build のログを確認：
+  ```bash
+  gcloud builds list --limit=5
+  gcloud builds log [BUILD_ID]
+  ```
 
-### サーバーが起動しない
+### デプロイは成功するがサーバーが起動しない
 
-**症状**: デプロイ成功後、サービスが起動しない
+**症状**: デプロイ成功後、サービスが起動しない、またはヘルスチェックが失敗する
 
 **確認ポイント**:
 - 環境変数が全て設定されているか確認（特に `OPENAI_API_KEY`, `SUPABASE_URL` など必須項目）
-- Railway のログで起動エラーを確認
-- `PORT` 環境変数が Railway の動的ポートと競合していないか確認（通常は自動設定されるため不要）
+- Cloud Run のログでエラーを確認：
+  ```bash
+  gcloud run services logs read ailuna-call-engine --region asia-northeast1 --limit 100
+  ```
+- `PORT` 環境変数は Cloud Run が自動設定するため、手動設定は不要
+- `PUBLIC_URL` が正しい Cloud Run の URL を指しているか確認
 
 ### Twilio から接続できない
 
-**症状**: 電話をかけても AI が応答しない
+**症状**: 電話をかけても AI が応答しない、または Twilio のエラーログにエラーが表示される
 
 **確認ポイント**:
-- Twilio の Webhook URL が正しい Railway のドメインを向いているか確認
-- `PUBLIC_URL` 環境変数が Railway のドメインと一致しているか確認
-- Railway のログで Twilio からのリクエストが届いているか確認
-- ヘルスチェックエンドポイント (`/health`) にアクセスできるか確認
+- Twilio の Webhook URL が正しい Cloud Run のドメインを向いているか確認
+  - 例: `https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/incoming-call-realtime`
+- URL が HTTPS になっているか確認（HTTP は不可）
+- `PUBLIC_URL` 環境変数が Cloud Run のドメインと一致しているか確認
+- Cloud Run のログで Twilio からのリクエストが届いているか確認
+- ヘルスチェックエンドポイント (`/health`) にアクセスできるか確認：
+  ```bash
+  curl https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/health
+  ```
+- Cloud Run のサービスが `--allow-unauthenticated` で公開されているか確認：
+  ```bash
+  gcloud run services describe ailuna-call-engine --region asia-northeast1 --format="value(status.url)"
+  ```
 
 ### 通話ログが保存されない
 
@@ -307,16 +403,58 @@ https://ailuna-call-engine-production.up.railway.app/incoming-call-realtime
 **確認ポイント**:
 - `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` が正しく設定されているか確認
 - Supabase の `call_logs` テーブルが存在するか確認（`sql/call_logs.sql` を実行）
-- Railway のログで Supabase 接続エラーが出ていないか確認
+- Cloud Run のログで Supabase 接続エラーが出ていないか確認
+- Supabase のプロジェクト設定で API が有効になっているか確認
+
+### タイムアウトエラーが発生する
+
+**症状**: 長時間の通話中に接続が切れる
+
+**確認ポイント**:
+- Cloud Run のタイムアウト設定を確認・延長：
+  ```bash
+  gcloud run services update ailuna-call-engine \
+    --region asia-northeast1 \
+    --timeout 3600
+  ```
+- デフォルトは 300 秒（5分）なので、長時間通話には不十分です
+- 最大 3600 秒（60分）まで設定可能です
+
+### コールドスタート（初回起動）が遅い
+
+**症状**: しばらく通話がない後、最初の通話で応答が遅い
+
+**対処法**:
+- 最小インスタンス数を 1 に設定してコールドスタートを回避：
+  ```bash
+  gcloud run services update ailuna-call-engine \
+    --region asia-northeast1 \
+    --min-instances 1
+  ```
+- ただし、アイドル時も 1 インスタンス分の料金が発生します
 
 ### ログの確認方法
 
-Railway のログを確認するには：
+Cloud Run のログを確認するには：
 
-1. Railway ダッシュボードで該当プロジェクトを開く
-2. 「Deployments」タブを選択
-3. 最新のデプロイメントをクリック
-4. 「View Logs」でリアルタイムログを確認
+```bash
+# 最新 50 件のログを表示
+gcloud run services logs read ailuna-call-engine --region asia-northeast1 --limit 50
+
+# リアルタイムでログを監視
+gcloud run services logs tail ailuna-call-engine --region asia-northeast1
+
+# 特定の時間範囲のログを表示
+gcloud run services logs read ailuna-call-engine \
+  --region asia-northeast1 \
+  --limit 100 \
+  --format="table(timestamp,severity,textPayload)"
+```
+
+または、Cloud Console から確認：
+1. [Cloud Run Console](https://console.cloud.google.com/run) を開く
+2. `ailuna-call-engine` サービスを選択
+3. 「ログ」タブをクリック
 
 ---
 
@@ -445,13 +583,13 @@ Railway のログを確認するには：
 ## Twilio 側の設定
 
 > [!NOTE]
-> Twilio の詳細な設定手順は、上記の「デプロイ手順（Railway への本番デプロイ）」→「5. Twilio の設定変更」セクションを参照してください。
+> Twilio の詳細な設定手順は、上記の「デプロイ手順（Google Cloud Run への本番デプロイ）」→「5. Twilio の設定変更」セクションを参照してください。
 
-本番運用では Railway のドメインを、開発時は ngrok のドメインを Twilio の Webhook URL に設定します。
+本番運用では Cloud Run のドメインを、開発時は ngrok のドメインを Twilio の Webhook URL に設定します。
 
-### 本番環境（Railway）
+### 本番環境（Cloud Run）
 
-- **A CALL COMES IN**: `https://{railway-domain}/incoming-call-realtime`
+- **A CALL COMES IN**: `https://{cloud-run-url}/incoming-call-realtime`
 
 ### 開発環境（ローカル + ngrok）
 
@@ -463,13 +601,17 @@ Railway のログを確認するには：
 
 ## 動作確認
 
-### 本番環境（Railway）での確認
+### 本番環境（Cloud Run）での確認
 
-1. Railway デプロイが完了していることを確認
-2. ヘルスチェックエンドポイントにアクセス: `https://{railway-domain}/health`
+1. Cloud Run デプロイが完了していることを確認
+2. ヘルスチェックエンドポイントにアクセス: `https://{cloud-run-url}/health`
 3. Twilio の電話番号に発信
 4. AI が応答し、双方向音声で自然な会話ができることを確認
 5. Supabase の `call_logs` テーブルに通話ログが保存されていることを確認
+6. Cloud Run のログで通話の流れを確認：
+   ```bash
+   gcloud run services logs read ailuna-call-engine --region asia-northeast1 --limit 50
+   ```
 
 ### 開発環境（ローカル）での確認
 
