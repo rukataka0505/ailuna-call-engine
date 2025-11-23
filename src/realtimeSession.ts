@@ -78,10 +78,10 @@ export class RealtimeSession {
           }
 
           console.log(`✅ User ${this.userId} subscription verified.`);
-          // user_prompts テーブルから設定を取得
+          // user_prompts テーブルから system_prompt と config_metadata を取得
           const { data: promptData, error: promptError } = await this.supabase
             .from('user_prompts')
-            .select('system_prompt')
+            .select('system_prompt, config_metadata')
             .eq('user_id', profile[0].id)
             .single();
 
@@ -90,9 +90,22 @@ export class RealtimeSession {
           } else {
             console.log('✨ Loaded dynamic settings from Supabase');
 
-            // system_prompt をそのまま適用
+            // config_metadata から greeting_message を取得（デフォルト値あり）
+            const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
+
+            // 固定の挨拶指示ブロックを作成
+            const fixedInstruction = `
+【重要：第一声の指定】
+通話が開始された際、AIの「最初の発話」は必ず以下の文言を一言一句変えずに読み上げてください。
+挨拶文：${greeting}
+`;
+
+            // 既存のプロンプトと結合
             if (promptData.system_prompt) {
-              this.currentSystemPrompt = promptData.system_prompt;
+              this.currentSystemPrompt = `${fixedInstruction}\n\n${promptData.system_prompt}`;
+            } else {
+              // system_prompt が空の場合でも、挨拶指示は適用
+              this.currentSystemPrompt = fixedInstruction;
             }
 
             return; // Supabase から取得できた場合はここで終了
