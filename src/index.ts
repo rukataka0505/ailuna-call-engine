@@ -144,6 +144,11 @@ wss.on('connection', (socket, req) => {
       }
     } catch (err) {
       console.error('Failed to handle Twilio message', err);
+      // エラー発生時は通話を確実に終了させる（無音放置を防ぐ）
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close();
+        console.log('🔚 Socket closed due to error');
+      }
     }
   });
 

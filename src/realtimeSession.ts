@@ -31,7 +31,7 @@ export class RealtimeSession {
   private connected = false;
   private isUserSpeaking = false;
   private turnCount = 0;
-  private currentSystemPrompt: string = config.openAiRealtimeSystemPrompt;
+  private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
   private currentGreeting: string = 'お電話ありがとうございます。';
   private isInitialGreetingSent = false;
 
@@ -59,6 +59,13 @@ export class RealtimeSession {
           .from('profiles')
           .select('id, is_subscribed')
           .eq('phone_number', this.options.toPhoneNumber)
+
+        // デバッグ用: 取得したプロファイルデータの詳細ログ
+        if (profile && profile[0]) {
+          console.log(`🔍 [Debug] Profile Found: ID=${profile[0].id}, Subscribed=${profile[0].is_subscribed}, Phone=${this.options.toPhoneNumber}`);
+        } else {
+          console.log(`⚠️ [Debug] No profile found for phone number: ${this.options.toPhoneNumber}`);
+        }
 
         if (profileError || !profile || profile.length === 0) {
           console.warn('⚠️ Profile not found or error:', profileError?.message);
@@ -121,10 +128,11 @@ ${promptData.business_description}
         return;
       }
     } catch (error) {
-      console.warn('⚠️ Failed to load system_prompt.md, falling back to env var');
+      console.warn('⚠️ Failed to load system_prompt.md, using default prompt');
+      console.warn('⚠️ Please ensure system_prompt.md exists or configure prompts in the database');
     }
 
-    // 3. フォールバック: 環境変数 (初期値のまま)
+    // system_prompt.md の読み込みにも失敗した場合は、初期値（汎用的なデフォルト）をそのまま使用
   }
 
   async connect(): Promise<void> {

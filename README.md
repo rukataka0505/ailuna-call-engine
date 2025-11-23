@@ -144,132 +144,6 @@ gcloud run deploy ailuna-call-engine \
 
 `.env.cloudrun.example` を参考に、以下のコマンドで環境変数を設定します：
 
-```bash
-gcloud run services update ailuna-call-engine \
-  --region asia-northeast1 \
-  --set-env-vars "\
-PUBLIC_URL=https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app,\
-OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx,\
-OPENAI_REALTIME_MODEL=gpt-realtime,\
-OPENAI_SUMMARY_MODEL=gpt-5-mini,\
-OPENAI_REALTIME_SYSTEM_PROMPT=あなたは飲食店の電話応対AIエージェントです。,\
-LOG_DIR=call_logs,\
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxx,\
-TWILIO_AUTH_TOKEN=xxxxxxxxxx,\
-SUPABASE_URL=https://xxxxxxxxxxxxxxxx.supabase.co,\
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGci..."
-```
-
-> [!IMPORTANT]
-> - `PUBLIC_URL` には、手順 2-2 で発行された Cloud Run の URL を設定してください
-> - 環境変数が多い場合は、Cloud Console の GUI から設定することも可能です
-> - `SUPABASE_SERVICE_ROLE_KEY` は絶対に公開しないでください
-
-#### 必須環境変数一覧
-
-| 変数名 | 説明 | 例 | 備考 |
-|--------|------|-----|------|
-| `PORT` | サーバーポート番号 | `8080` | **Cloud Run が自動設定** - 手動設定不要。ローカル開発では未設定時に `3100` を使用 |
-| `PUBLIC_URL` | Cloud Run のドメイン | `https://ailuna-call-engine-xxx-an.a.run.app` | **デプロイ後に発行される URL を設定** |
-| `OPENAI_API_KEY` | OpenAI API キー | `sk-proj-xxx...` | **必須** |
-| `OPENAI_REALTIME_MODEL` | Realtime API モデル | `gpt-realtime` | **必須** |
-| `OPENAI_SUMMARY_MODEL` | 要約生成モデル | `gpt-4o-mini` | **必須** |
-| `OPENAI_REALTIME_SYSTEM_PROMPT` | システムプロンプト（フォールバック） | `"あなたは..."` | `system_prompt.md` が無い場合に使用 |
-| `LOG_DIR` | ログ保存ディレクトリ | `call_logs` | Cloud Run は永続ストレージ無し、Supabase 保存を推奨 |
-| `TWILIO_ACCOUNT_SID` | Twilio アカウント SID | `ACxxxxxxxxxx` | **必須** |
-| `TWILIO_AUTH_TOKEN` | Twilio Auth Token | `xxxxxxxxxx` | **必須** |
-| `SUPABASE_URL` | Supabase プロジェクト URL | `https://xxx.supabase.co` | **必須** - 通話ログ保存用 |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Service Role Key | `eyJhbGci...` | **必須** - RLS バイパス用 |
-
-### 4. デプロイの確認
-
-1. Cloud Run のデプロイが成功したことを確認：
-   ```bash
-   gcloud run services describe ailuna-call-engine --region asia-northeast1
-   ```
-
-2. ヘルスチェックエンドポイントにアクセスして動作確認：
-   ```bash
-   curl https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/health
-   ```
-   レスポンス例：
-   ```json
-   {"status":"ok","timestamp":"2025-11-22T08:00:00.000Z"}
-   ```
-
-### 5. Twilio の設定変更
-
-Cloud Run デプロイ完了後、Twilio の Webhook URL を Cloud Run のドメインに変更します。
-
-#### 5-1. Twilio Console にアクセス
-
-1. [Twilio Console](https://console.twilio.com/) にログインします
-2. 「Phone Numbers」→「Manage」→「Active numbers」を選択します
-3. AiLuna で使用する電話番号をクリックします
-
-#### 5-2. Webhook URL の更新
-
-「Voice Configuration」セクションで以下を設定します：
-
-- **A CALL COMES IN**:
-  - `Webhook` を選択
-  - URL: `https://{your-cloudrun-url}/incoming-call-realtime`
-  - HTTP Method: `POST`
-
-例：
-```
-https://ailuna-call-engine-xxxxxxxxxx-an.a.run.app/incoming-call-realtime
-```
-
-> [!NOTE]
-> `/incoming-call-realtime` エンドポイントが返す TwiML 内の `<Stream url>` は、
-> `PUBLIC_URL` 環境変数から自動的に `wss://{cloud-run-url}/twilio-media` を生成します。
-
-#### 5-3. 設定の保存
-
-「Save Configuration」をクリックして保存します。
-
-### 6. 動作確認
-
-1. Twilio の電話番号に発信します
-2. AI が応答し、双方向音声で会話できることを確認します
-3. Supabase の `call_logs` テーブルに通話ログが保存されていることを確認します
-4. Cloud Run のログを確認：
-   ```bash
-   gcloud run services logs read ailuna-call-engine --region asia-northeast1 --limit 50
-   ```
-
----
-
-## 環境変数の詳細
-
-`.env` に設定する環境変数の詳細です。ローカル開発用は `.env.example`、本番用は `.env.production.example` を参考にしてください。
-
-### サーバー設定
-
-| 変数名 | 説明 | デフォルト値 | 必須 |
-|--------|------|-------------|------|
-| `PORT` | HTTP ポート番号（Cloud Run では自動設定、ローカル開発では未設定時に `3100` を使用） | `3100` | ○ |
-| `PUBLIC_URL` | 公開ベース URL（ngrok または Cloud Run） | - | ○ |
-
-### OpenAI 設定
-
-| 変数名 | 説明 | デフォルト値 | 必須 |
-|--------|------|-------------|------|
-| `OPENAI_API_KEY` | OpenAI API キー | - | ○ |
-| `OPENAI_REALTIME_MODEL` | Realtime API モデル | `gpt-realtime` | ○ |
-| `OPENAI_REALTIME_SYSTEM_PROMPT` | システムプロンプト（フォールバック） | - | △ |
-| `OPENAI_SUMMARY_MODEL` | 通話要約生成モデル | `gpt-4o-mini` | ○ |
-
-> [!NOTE]
-> `system_prompt.md` ファイルが存在する場合、そちらが優先されます。  
-> `OPENAI_REALTIME_SYSTEM_PROMPT` はファイルが無い場合のフォールバックとして使用されます。
-
-### ログ設定
-
-| 変数名 | 説明 | デフォルト値 | 必須 |
-|--------|------|-------------|------|
-| `LOG_DIR` | 通話ログ保存ディレクトリ | `call_logs` | ○ |
 
 > [!WARNING]
 > Railway などのエフェメラル環境では、ファイルシステムへのログ保存は再起動時に消失します。  
@@ -460,32 +334,35 @@ gcloud run services logs read ailuna-call-engine \
 
 ## システムプロンプトのカスタマイズ
 
-システムプロンプト（AI の人格や会話ルール）は、以下の優先順位で読み込まれます。
+システムプロンプト（AI の人格や会話ルール）は、以下の優先順位で読み込まれます：
 
-1. `system_prompt.md`（推奨）
+### 1. Supabase データベース（最優先）
 
-   * プロジェクトルートにあるこのファイルを編集することで、
-     **サーバー再起動なし**に（次回通話開始時から）プロンプトを変更可能です。
-   * Markdown ファイルとして自然な文章で記述できます。
-   * 通話開始（Realtime 接続）ごとに毎回ファイルを読み込みます。
+- `profiles` テーブルの `phone_number` でユーザーを特定
+- `user_prompts` テーブルから `business_description` と `greeting_message` を取得
+- ユーザーごとにカスタマイズされたプロンプトを使用可能
 
-2. 環境変数 `OPENAI_REALTIME_SYSTEM_PROMPT`（フォールバック）
+### 2. `system_prompt.md`（フォールバック）
 
-   * `system_prompt.md` が存在しない、または読み込めない場合に使用されます。
-   * `.env` に記述します。改行は `\n` を使用してください。
+- データベースに設定がない場合、プロジェクトルートの `system_prompt.md` を読み込みます
+- **サーバー再起動なし**に（次回通話開始時から）プロンプトを変更可能です
+- Markdown ファイルとして自然な文章で記述できます
+- 通話開始（Realtime 接続）ごとに毎回ファイルを読み込みます
+
+### 3. デフォルトプロンプト（最終フォールバック）
+
+- データベースにも `system_prompt.md` にも設定がない場合、汎用的なデフォルトプロンプトを使用します
+- デフォルト: `「あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。」`
 
 ### `system_prompt.md` の書き方
 
-* 通話に使いたいプロンプト本文をそのまま記述します。
-* 改行・箇条書きもそのまま反映されます。
-* 「飲食店共通ルール」＋「店舗ごとの方針」のように、
-  人間が読んで意味が分かる構成にしておくと保守が楽です。
+* 通話に使いたいプロンプト本文をそのまま記述します
+* 改行・箇条書きもそのまま反映されます
+* 「飲食店共通ルール」＋「店舗ごとの方針」のように、人間が読んで意味が分かる構成にしておくと保守が楽です
 
-> ⚠️ 注意
-> 現在のファイルベース（`.md`）プロンプト管理は、ローカル開発または
-> 永続ストレージを持つサーバー向けです。
-> Heroku / Cloud Run などのエフェメラル環境では、再起動でファイルが消えるため、
-> 本番運用では将来的に DB などへの移行を検討してください。
+> [!NOTE]
+> 本番運用では、Supabase の `user_prompts` テーブルでユーザーごとにプロンプトを管理することを推奨します。  
+> `system_prompt.md` は開発時のフォールバックや、全ユーザー共通のベースプロンプトとして活用できます。
 
 ---
 
@@ -698,7 +575,7 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
   Realtime の `instructions` / GREETING に反映する（実装済み）
 * 通話終了時に transcript / 要約を Supabase に保存し、
   Web ダッシュボードで「いつ・誰から・どんな要件だったか」を一覧できるようにする（実装済み）
-  - 要約は OpenAI API（`OPENAI_SUMMARY_MODEL`）を使用して自動生成されます
+  - 要約は OpenAI API（`OPENAI_MODEL_MINI`）を使用して自動生成されます
   - 20文字以内の簡潔なタイトル形式で、履歴一覧での表示に最適化されています
 * 通話時間・利用回数・トークン使用量などのメトリクスを集計し、請求や分析に活用する
 
@@ -743,7 +620,7 @@ RLSポリシーにより、各店舗（ユーザー）は自分の店舗の通�
 本リポジトリでは最新の OpenAI SDK 仕様に合わせてこれらの対応を行っています。
 
 #### 確認ポイント
-* **要約モデル設定**: `.env` の `OPENAI_SUMMARY_MODEL` が正しく設定されているか（例: `gpt-5.1`）。
+* **要約モデル設定**: `.env` の `OPENAI_MODEL_MINI` が正しく設定されているか（例: `gpt-5.1`）。
 * **SDKバージョン**: `openai` パッケージが最新（v4.70.0以上 または v6系）であることを確認してください。
 * **ログ確認**: 要約生成時のエラーや使用モデルはコンソールログに出力されます（`🤖 Generating call summary... (Model: ...)`）。
 * **パラメータ仕様**: `gpt-5.1` などの推論モデルは `developer` ロールを推奨するため、ソースコード（`src/realtimeSession.ts`）で `role: 'developer'` を使用しています。
