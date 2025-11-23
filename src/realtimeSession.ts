@@ -81,7 +81,7 @@ export class RealtimeSession {
           // user_prompts テーブルから設定を取得
           const { data: promptData, error: promptError } = await this.supabase
             .from('user_prompts')
-            .select('greeting_message, business_description')
+            .select('system_prompt')
             .eq('user_id', profile[0].id)
             .single();
 
@@ -90,21 +90,10 @@ export class RealtimeSession {
           } else {
             console.log('✨ Loaded dynamic settings from Supabase');
 
-            // プロンプト構築
-            if (promptData.business_description) {
-              this.currentSystemPrompt = `
-あなたは電話応対AIエージェントです。
-以下の企業情報に基づき、丁寧に応対してください。
-
-【企業情報】
-${promptData.business_description}
-
-【基本ルール】
-- 丁寧で簡潔な応答を心がけてください。
-- 不確かな情報は推測せず、専門的な判断や確約は避け、必要に応じて確認を提案してください。
-`.trim();
+            // system_prompt をそのまま適用
+            if (promptData.system_prompt) {
+              this.currentSystemPrompt = promptData.system_prompt;
             }
-
 
             return; // Supabase から取得できた場合はここで終了
           }
