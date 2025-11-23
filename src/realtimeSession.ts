@@ -32,6 +32,7 @@ export class RealtimeSession {
   private isUserSpeaking = false;
   private turnCount = 0;
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
+  private hasRequestedInitialResponse = false;
 
   private userId?: string;
   private callerNumber?: string;
@@ -212,7 +213,19 @@ ${promptData.business_description}
         // response.created handling if needed
       }
 
-
+      if (event.type === 'session.updated') {
+        // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
+        if (!this.hasRequestedInitialResponse) {
+          console.log('✨ Session updated, requesting initial response');
+          this.sendJson({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+            },
+          });
+          this.hasRequestedInitialResponse = true;
+        }
+      }
 
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
         // ユーザー発話中は音声を送らない
