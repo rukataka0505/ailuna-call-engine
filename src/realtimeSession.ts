@@ -32,8 +32,6 @@ export class RealtimeSession {
   private isUserSpeaking = false;
   private turnCount = 0;
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
-  private currentGreeting: string = 'お電話ありがとうございます。';
-  private isInitialGreetingSent = false;
 
   private userId?: string;
   private callerNumber?: string;
@@ -106,10 +104,7 @@ ${promptData.business_description}
 `.trim();
             }
 
-            // 挨拶文設定
-            if (promptData.greeting_message) {
-              this.currentGreeting = promptData.greeting_message;
-            }
+
             return; // Supabase から取得できた場合はここで終了
           }
         }
@@ -137,7 +132,6 @@ ${promptData.business_description}
 
   async connect(): Promise<void> {
     await this.loadSystemPrompt();
-    this.isInitialGreetingSent = false;
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${config.openAiRealtimeModel}`, {
@@ -195,26 +189,7 @@ ${promptData.business_description}
     this.sendJson(payload);
   }
 
-  private sendInitialGreeting() {
-    const instructionText = `以下のテキストを、一言一句変更せず、そのまま読み上げてください：\n\n${this.currentGreeting}`;
-    const itemPayload = {
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'system',
-        content: [{ type: 'input_text', text: instructionText }]
-      }
-    };
-    this.sendJson(itemPayload);
 
-    const responsePayload = {
-      type: 'response.create',
-      response: {
-        modalities: ['text', 'audio'],
-      },
-    };
-    this.sendJson(responsePayload);
-  }
 
   sendAudio(g711_ulaw: Buffer) {
     if (!this.connected || !this.ws) return;
@@ -237,13 +212,7 @@ ${promptData.business_description}
         // response.created handling if needed
       }
 
-      if (event.type === 'session.updated') {
-        if (!this.isInitialGreetingSent) {
-          console.log('✨ Session updated, sending initial greeting');
-          this.sendInitialGreeting();
-          this.isInitialGreetingSent = true;
-        }
-      }
+
 
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
         // ユーザー発話中は音声を送らない
