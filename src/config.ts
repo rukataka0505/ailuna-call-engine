@@ -19,7 +19,7 @@ export const config = {
   publicUrl: requiredEnv('PUBLIC_URL'),
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),
   openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'OPENAI_REALTIME'),
-  openAiSummaryModel: requiredEnv('OPENAI_MODEL_MINI', 'gpt-5-nano'),
+  openAiSummaryModel: requiredEnv('OPENAI_MODEL_MINI', 'gpt-5-mini'),
   logDir: requiredEnv('LOG_DIR', path.join(process.cwd(), 'call_logs')),
   twilioAuthToken: requiredEnv('TWILIO_AUTH_TOKEN', ''),
   twilioAccountSid: requiredEnv('TWILIO_ACCOUNT_SID', ''),
