@@ -577,7 +577,10 @@ OpenAI Realtime API の `input_audio_transcription` 機能（`whisper-1`）を�
   Web ダッシュボードで「いつ・誰から・どんな要件だったか」を一覧できるようにする（実装済み）
   - 要約は OpenAI API（`OPENAI_MODEL_MINI`）を使用して自動生成されます
   - 20文字以内の簡潔なタイトル形式で、履歴一覧での表示に最適化されています
-* 通話時間・利用回数・トークン使用量などのメトリクスを集計し、請求や分析に活用する
+* **通話時間の自動報告（実装済み）**
+  - 通話終了時に通話時間（分単位、切り上げ）を自動計算し、Stripe API を通じて利用量を報告します
+  - 従量課金モデル（例: 30円/分）に対応し、月額固定料金とのハイブリッド課金が可能です
+  - 環境変数 `STRIPE_SECRET_KEY` と `STRIPE_USAGE_PRICE_ID` の設定が必要です
 
 これらは順次拡張していきます。
 
@@ -607,6 +610,10 @@ RLSポリシーにより、各店舗（ユーザー）は自分の店舗の通�
 - `id`: UUID (PK) - ユーザーID
 - `phone_number`: Text - 店舗の電話番号（通話の宛先番号と照合）
 - `is_subscribed`: Boolean - サブスクリプション状態（`true`: 有効, `false`: 無効）
+  - **更新条件**: Stripe Webhook により以下のタイミングで自動更新されます
+    - `true` に設定: `checkout.session.completed` または `invoice.payment_succeeded` イベント受信時
+    - `false` に設定: `customer.subscription.deleted` イベント受信時（サブスクリプション解約）
+- `stripe_customer_id`: Text - Stripe 顧客ID（課金処理・利用量報告に使用）
 
 通話開始時に `phone_number` でプロファイルを検索し、`is_subscribed` が `false` の場合は通話を拒否します。
 

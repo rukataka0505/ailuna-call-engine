@@ -25,6 +25,8 @@ export const config = {
   twilioAccountSid: requiredEnv('TWILIO_ACCOUNT_SID', ''),
   supabaseUrl: requiredEnv('SUPABASE_URL', ''),
   supabaseServiceRoleKey: requiredEnv('SUPABASE_SERVICE_ROLE_KEY', ''),
+  stripeSecretKey: requiredEnv('STRIPE_SECRET_KEY'),
+  stripeUsagePriceId: requiredEnv('STRIPE_USAGE_PRICE_ID'),
 };
 
 type Config = typeof config;

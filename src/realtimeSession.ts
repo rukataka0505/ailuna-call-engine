@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
@@ -25,6 +26,7 @@ export class RealtimeSession {
   private ws?: WebSocket;
   private supabase: SupabaseClient;
   private openai: OpenAI;
+  private stripe: Stripe;
 
   private readonly options: RealtimeSessionOptions;
 
@@ -45,6 +47,9 @@ export class RealtimeSession {
     this.callerNumber = options.fromPhoneNumber;
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
+    this.stripe = new Stripe(config.stripeSecretKey, {
+      apiVersion: '2025-02-24.acacia',
+    });
   }
 
   private async loadSystemPrompt(): Promise<void> {
@@ -322,6 +327,81 @@ export class RealtimeSession {
       .join('\n');
   }
 
+  /**
+   * Report call usage to Stripe for usage-based billing
+   */
+  private async reportUsageToStripe(userId: string, durationSeconds: number) {
+    try {
+      console.log(`💳 Reporting usage to Stripe for user ${userId}...`);
+
+      // 1. Fetch stripe_customer_id from profiles table
+      const { data: profile, error: profileError } = await this.supabase
+        .from('profiles')
+        .select('stripe_customer_id')
+        .eq('id', userId)
+        .single();
+
+      if (profileError || !profile?.stripe_customer_id) {
+        console.warn('⚠️ No Stripe customer ID found for user, skipping usage report');
+        return;
+      }
+
+      const stripeCustomerId = profile.stripe_customer_id;
+      console.log(`🔍 Found Stripe customer ID: ${stripeCustomerId}`);
+
+      // 2. Find active subscription with the usage price
+      const subscriptions = await this.stripe.subscriptions.list({
+        customer: stripeCustomerId,
+        status: 'active',
+        limit: 10,
+      });
+
+      if (subscriptions.data.length === 0) {
+        console.warn('⚠️ No active subscriptions found for customer');
+        return;
+      }
+
+      // 3. Find the subscription item matching the usage price ID
+      let usageSubscriptionItem: Stripe.SubscriptionItem | null = null;
+
+      for (const subscription of subscriptions.data) {
+        for (const item of subscription.items.data) {
+          if (item.price.id === config.stripeUsagePriceId) {
+            usageSubscriptionItem = item;
+            break;
+          }
+        }
+        if (usageSubscriptionItem) break;
+      }
+
+      if (!usageSubscriptionItem) {
+        console.warn(`⚠️ No subscription item found with usage price ID: ${config.stripeUsagePriceId}`);
+        return;
+      }
+
+      console.log(`✅ Found usage subscription item: ${usageSubscriptionItem.id}`);
+
+      // 4. Calculate usage quantity (convert seconds to minutes, round up)
+      const durationMinutes = Math.ceil(durationSeconds / 60);
+      console.log(`⏱️ Call duration: ${durationSeconds}s → ${durationMinutes} minutes (rounded up)`);
+
+      // 5. Create usage record
+      const usageRecord = await this.stripe.subscriptionItems.createUsageRecord(
+        usageSubscriptionItem.id,
+        {
+          quantity: durationMinutes,
+          action: 'increment',
+          timestamp: Math.floor(Date.now() / 1000),
+        }
+      );
+
+      console.log(`✅ Usage record created: ${usageRecord.id} (${durationMinutes} minutes)`);
+    } catch (err) {
+      console.error('❌ Failed to report usage to Stripe:', err);
+      // Don't throw - usage reporting failure shouldn't block call log saving
+    }
+  }
+
   async saveCallLogToSupabase() {
     if (!this.userId || !this.callerNumber) {
       console.warn('⚠️ Missing userId or callerNumber, skipping Supabase log save.');
@@ -432,6 +512,9 @@ export class RealtimeSession {
         console.error('❌ Failed to save call log to Supabase:', error);
       } else {
         console.log('✅ Call log saved to Supabase');
+
+        // Report usage to Stripe for billing
+        await this.reportUsageToStripe(this.userId, durationSeconds);
       }
     } catch (err) {
       console.error('❌ Error saving call log:', err);

@@ -23,7 +23,7 @@ const supabaseAdmin = createClient(
  * POST /api/webhooks/stripe
  * 
  * Handles Stripe webhook events for subscription management.
- * Processes checkout.session.completed and invoice.payment_succeeded events.
+ * Processes checkout.session.completed, invoice.payment_succeeded, and customer.subscription.deleted events.
  */
 export async function POST(request: NextRequest) {
     const body = await request.text();
@@ -65,6 +65,10 @@ export async function POST(request: NextRequest) {
 
             case 'invoice.payment_succeeded':
                 await handleInvoicePaymentSucceeded(event.data.object as Stripe.Invoice);
+                break;
+
+            case 'customer.subscription.deleted':
+                await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
                 break;
 
             default:
@@ -150,6 +154,59 @@ async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
 
     // Update subscription status and assign phone number
     await updateSubscriptionAndAssignPhone(userId, stripeCustomerId);
+}
+
+/**
+ * Handle customer.subscription.deleted event
+ * Triggered when a customer's subscription is cancelled
+ */
+async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
+    console.log(`🚫 Processing customer.subscription.deleted: ${subscription.id}`);
+
+    const stripeCustomerId = subscription.customer as string;
+
+    if (!stripeCustomerId) {
+        console.error('❌ No customer ID found in subscription');
+        return;
+    }
+
+    // Retrieve customer to get metadata
+    const customer = await stripe.customers.retrieve(stripeCustomerId);
+
+    if (customer.deleted) {
+        console.error('❌ Customer has been deleted');
+        return;
+    }
+
+    const userId = customer.metadata?.userId;
+
+    if (!userId) {
+        console.error('❌ No userId found in customer metadata');
+        return;
+    }
+
+    console.log(`👤 User ID: ${userId}, Stripe Customer ID: ${stripeCustomerId}`);
+
+    // Update subscription status to false
+    try {
+        console.log(`📝 Updating subscription status to false for user ${userId}...`);
+
+        const { error: updateError } = await supabaseAdmin
+            .from('profiles')
+            .update({ is_subscribed: false })
+            .eq('id', userId);
+
+        if (updateError) {
+            console.error(`❌ Failed to update subscription status: ${updateError.message}`);
+            throw new Error(`Failed to update subscription status: ${updateError.message}`);
+        }
+
+        console.log(`✅ Subscription status updated to false for user ${userId}`);
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error(`❌ Error in handleSubscriptionDeleted: ${errorMessage}`);
+        throw err;
+    }
 }
 
 /**
