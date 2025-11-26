@@ -32,10 +32,12 @@ app.get('/health', (req, res) => {
 app.post('/incoming-call-realtime', async (req, res) => {
   console.log('📞 incoming call');
 
-  console.log('---------- DEBUG START ----------');
-  console.log('Request Body:', JSON.stringify(req.body, null, 2));
-  console.log('To Parameter:', req.body.To || req.body.to);
-  console.log('---------- DEBUG END   ----------');
+  if (process.env.NODE_ENV === 'development') {
+    console.log('---------- DEBUG START ----------');
+    console.log('Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('To Parameter:', req.body.To || req.body.to);
+    console.log('---------- DEBUG END   ----------');
+  }
 
   const to = req.body.To;
   const from = req.body.From;
@@ -62,10 +64,6 @@ const wss = new WebSocketServer({ server, path: '/twilio-media' });
 wss.on('connection', (socket, req) => {
   console.log('🔊 Twilio media WebSocket connected');
   console.log('Incoming WS Request URL:', req.url);
-
-  // クエリパラメータからの取得は廃止 (startイベントのcustomParametersから取得するため)
-  // const url = new URL(req.url || '', `http://${req.headers.host}`);
-  // const toPhoneNumber = url.searchParams.get('to') || undefined;
 
   socket.on('message', async (msg: WebSocket.RawData) => {
     try {

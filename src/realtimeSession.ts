@@ -7,6 +7,7 @@ import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
+import { SUMMARY_SYSTEM_PROMPT } from './prompts';
 
 export interface RealtimeSessionOptions {
   streamSid: string;
@@ -201,8 +202,6 @@ export class RealtimeSession {
     this.sendJson(payload);
   }
 
-
-
   sendAudio(g711_ulaw: Buffer) {
     if (!this.connected || !this.ws) return;
     const payload = {
@@ -220,9 +219,6 @@ export class RealtimeSession {
   private async handleRealtimeEvent(raw: string) {
     try {
       const event = JSON.parse(raw);
-      if (event.type === 'response.created') {
-        // response.created handling if needed
-      }
 
       if (event.type === 'session.updated') {
         // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
@@ -243,8 +239,6 @@ export class RealtimeSession {
         if (this.isUserSpeaking) {
           return;
         }
-
-        const responseId = event.response_id;
 
         const base64Mulaw = event.delta ?? event.audio?.data;
         if (base64Mulaw) {
@@ -420,51 +414,7 @@ export class RealtimeSession {
           messages: [
             {
               role: 'developer',
-              content: `あなたは電話応対の通話ログ要約専用アシスタントです。
-店舗オーナーがダッシュボードで通話履歴を確認する前提で、
-以下の通話内容を要約してください。
-
-【前提として画面で確認できる情報】
-- 発信者・店舗の電話番号
-- 通話日時、通話時間
-- 通話の全文ログ
-これらは別の項目で確認できるので、要約に重複して書く必要はありません。
-
-【出力フォーマット】
-- 1行目：履歴一覧に表示する短い見出し（20文字以内）
-- 2行目以降（任意）：店舗側の行動や注意点を簡潔に補足
-- 全体としておおよそ50文字以内に収めること
-- 改行は入れてよいが、行数を増やしすぎないこと
-
-【1行目（見出し）のルール】
-- 必ず20文字以内の日本語にすること
-- 【予約】【キャンセル】【クレーム】【問合せ】【折返依頼】【その他】など、
-  用件の種類が一目で分かるラベルを先頭に付けること
-- 来店日時や人数など、要点を短く含めること
-- 例：
-  - 【予約】明日10時来店希望
-  - 【クレーム】料理の味に不満
-  - 【折返依頼】見積り連絡希望
-
-【2行目以降（補足メモ）のルール】
-- 行頭に「・」を付け、箇条書きで書くこと
-- 店舗側の「やるべきこと」「注意点」「伝達すべきポイント」を簡潔に書く
-  - 例：予約確定に必要な確認事項、折り返し要否、トラブル防止のための再確認ポイントなど
-- 例：
-  - ・翌日の来店予約希望、10時で予約確定が必要
-  - ・時間の聞き違い防止のため折り返し確認すると安心
-
-【含めなくてよい情報】
-- 電話番号、通話日時、通話ID、通話時間
-- あいさつや雑談のみで、本質的な要件に関係しない部分
-
-【禁止事項】
-- 「通話内容の要約：」「要約は以下のとおりです」などの前置きは書かないこと
-- 上記フォーマット以外の余計な文章は出力しないこと
-
-これらのルールに従い、次に与える通話内容を要約してください。
-
-`
+              content: SUMMARY_SYSTEM_PROMPT
             },
             {
               role: 'user',
