@@ -115,3 +115,28 @@ Twilio Voice Number の Webhook を以下に設定します（POST）：
 - [ ] `sms_body_sent` and `sms_sent_at` are properly recorded on approval/rejection.
 - [ ] Environment variable validation allows flexible startup.
 
+---
+
+## 10. Feature Flags
+
+### REALTIME_TOOLING_RESERVATION
+
+Controls how reservation conversations are handled:
+
+| Value | Mode | Description |
+|-------|------|-------------|
+| `0` or unset | Legacy | Server-side state machine controls conversation flow. Uses Chat Completions for intent classification, slot extraction, and confirmation. |
+| `1` | **Recommended** | Model-driven flow with `verify_reservation` tool. Model handles conversation autonomously and calls tool when ready. Lower latency. |
+
+**Migration Path:**
+1. Test with `REALTIME_TOOLING_RESERVATION=1` in staging
+2. Verify tool calls and DB records
+3. Enable in production
+4. Future: Make `1` the default, deprecate legacy path
+
+**Add to `.env`:**
+```bash
+REALTIME_TOOLING_RESERVATION=1
+```
+
+

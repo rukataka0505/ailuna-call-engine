@@ -19,11 +19,16 @@ export interface TwilioMediaMessage {
 
 export interface RealtimeLogEvent {
   timestamp: string;
-  event: 'start' | 'user_utterance' | 'assistant_response' | 'stop' | string;
+  event: 'start' | 'user_utterance' | 'assistant_response' | 'tool_call' | 'stop' | string;
   role?: 'user' | 'assistant' | 'system';
   text?: string;
   streamSid?: string;
   callSid?: string;
   turn?: number;
   raw?: unknown;
+  // Tool call logging fields
+  tool?: string;
+  call_id?: string;
+  args?: string;
+  result?: string;
 }

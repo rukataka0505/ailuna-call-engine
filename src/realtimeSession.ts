@@ -137,24 +137,54 @@ export class RealtimeSession {
                 console.log(`📋 Found ${formFields.length} reservation fields.`);
                 console.log(`📋 First field key: ${formFields[0].field_key}`);
 
-                const fieldList = formFields.map(f => {
-                  const reqStr = f.required ? '(必須)' : '(任意)';
+                // Build field list with different formats based on tooling mode
+                if (config.realtimeToolingReservation) {
+                  // Tooling mode: Include field_key mapping for verify_reservation
+                  const fieldMapping = formFields.map(f => {
+                    const reqStr = f.required ? '(必須)' : '(任意)';
+                    return `  - ${f.field_key}: ${f.label} ${reqStr}`;
+                  }).join('\n');
 
-                  // Handle options safely (could be array or JSON string depending on DB driver behavior)
-                  let optionsArray: string[] = [];
-                  if (Array.isArray(f.options)) {
-                    optionsArray = f.options;
-                  } else if (typeof f.options === 'string') {
-                    try { optionsArray = JSON.parse(f.options); } catch (e) { /* ignore */ }
-                  }
+                  reservationInstruction = `
+【予約ヒアリング項目】
+以下の情報を自然な会話の中で聞き出してください：
+${fieldMapping}
 
-                  const optsStr = (optionsArray.length > 0)
-                    ? ` [選択肢: ${optionsArray.join(', ')}]`
-                    : '';
-                  return `- ${f.label} ${reqStr}${optsStr}`;
-                }).join('\n');
+【verify_reservation ツールの使い方】
+- 必須項目（customer_name、party_size、requested_date、requested_time）が全て揃ったら verify_reservation を呼び出してください。
+- ツールが ok:true を返すまで「予約完了」「承りました」「予約を受け付けました」等の確定表現は絶対に禁止です。
+- ok:false / missing_fields が返された場合は、不足項目を聞き直してください。
+- ツールが成功したら「確認して後ほどSMSでご連絡します」と伝えてください。
 
-                reservationInstruction = `
+【日付・時間の形式】
+- requested_date: YYYY-MM-DD（例：2025-12-20）
+- requested_time: HH:mm（例：19:00）
+- 「明日」「来週金曜」などは現在日時から計算して正確な日付に変換してください。
+
+【party_size について】
+- 必ず正の整数で指定してください（例：2）
+- 「2名」「2人」などは数値 2 に変換してください。
+`;
+                } else {
+                  // Legacy mode: Simple field list
+                  const fieldList = formFields.map(f => {
+                    const reqStr = f.required ? '(必須)' : '(任意)';
+
+                    // Handle options safely
+                    let optionsArray: string[] = [];
+                    if (Array.isArray(f.options)) {
+                      optionsArray = f.options;
+                    } else if (typeof f.options === 'string') {
+                      try { optionsArray = JSON.parse(f.options); } catch (e) { /* ignore */ }
+                    }
+
+                    const optsStr = (optionsArray.length > 0)
+                      ? ` [選択肢: ${optionsArray.join(', ')}]`
+                      : '';
+                    return `- ${f.label} ${reqStr}${optsStr}`;
+                  }).join('\n');
+
+                  reservationInstruction = `
 【予約ヒアリング項目】
 予約希望のお客様には、以下の項目を必ず確認してください。
 ${fieldList}
@@ -162,6 +192,7 @@ ${fieldList}
 【予約確定のフロー】
 - 通話中には「予約確定」と言わず、「確認して後ほどSMSでご連絡します」と伝えてください。
 `;
+                }
               }
             } catch (err) {
               console.warn('⚠️ Failed to fetch reservation fields:', err);
@@ -262,6 +293,27 @@ ${fieldList}
   }
 
   private sendSessionUpdate() {
+    // Build tools config when feature flag is ON
+    const toolsConfig = config.realtimeToolingReservation ? {
+      tools: [{
+        type: 'function',
+        name: 'verify_reservation',
+        description: '予約内容を検証し、DBに保存します。お客様から全ての必須項目（お名前、人数、日付、時間）を聞き取った後に呼び出してください。',
+        parameters: {
+          type: 'object',
+          properties: {
+            customer_name: { type: 'string', description: 'お客様のお名前' },
+            party_size: { type: 'integer', description: '予約人数（正の整数）' },
+            requested_date: { type: 'string', description: '予約日（YYYY-MM-DD形式）' },
+            requested_time: { type: 'string', description: '予約時間（HH:mm形式）' },
+            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' }
+          },
+          required: ['customer_name', 'party_size', 'requested_date', 'requested_time']
+        }
+      }],
+      tool_choice: 'auto'
+    } : {};
+
     const payload = {
       type: 'session.update',
       session: {
@@ -271,7 +323,7 @@ ${fieldList}
           threshold: 0.6,
           prefix_padding_ms: 300,
           silence_duration_ms: 800,
-          create_response: false, // Phase 7: Disable auto-response to control flow
+          create_response: config.realtimeToolingReservation, // true when tooling enabled, false otherwise
           interrupt_response: true,
         },
         input_audio_format: 'g711_ulaw',
@@ -280,6 +332,7 @@ ${fieldList}
         input_audio_transcription: {
           model: 'whisper-1',
         },
+        ...toolsConfig
       },
     };
     this.sendJson(payload);
@@ -347,6 +400,17 @@ ${fieldList}
           this.transcript.push({ role: 'assistant', text, timestamp: new Date().toISOString() });
           console.log(`🤖 AI応答 #${this.turnCount}: ${text}`);
         }
+
+        // Function Call Detection (Realtime Tooling)
+        if (config.realtimeToolingReservation) {
+          const functionCalls = output.filter((item: any) => item.type === 'function_call');
+          for (const fc of functionCalls) {
+            if (fc.name === 'verify_reservation') {
+              console.log(`🔧 Function call detected: ${fc.name} (call_id: ${fc.call_id})`);
+              await this.handleVerifyReservation(fc.call_id, fc.arguments);
+            }
+          }
+        }
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
@@ -373,13 +437,17 @@ ${fieldList}
           this.transcript.push({ role: 'user', text, timestamp: new Date().toISOString() });
           console.log(`🗣️ ユーザー発話 #${this.turnCount}: ${text}`);
 
-          // Phase 6 & 7: Mode Separation & State Machine
-          if (!this.gateDone) {
-            this.checkIntent(text); // Async check, will trigger handleTurn inside
-          } else {
-            // Already gated, proceed to normal turn handling
-            this.handleTurn(text);
+          // Skip state machine when Realtime tooling is enabled (model auto-responds)
+          if (!config.realtimeToolingReservation) {
+            // Phase 6 & 7: Mode Separation & State Machine (legacy path)
+            if (!this.gateDone) {
+              this.checkIntent(text); // Async check, will trigger handleTurn inside
+            } else {
+              // Already gated, proceed to normal turn handling
+              this.handleTurn(text);
+            }
           }
+          // When flag ON: model handles conversation via create_response: true
         }
       }
     } catch (err) {
@@ -633,10 +701,173 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
     }
   }
 
+  // ================== Realtime Tooling: verify_reservation ==================
 
+  /**
+   * Handle the verify_reservation function call from the model.
+   * Validates required fields, saves to DB, and sends function_call_output.
+   */
+  private async handleVerifyReservation(callId: string, argsJson: string) {
+    console.log('🔧 verify_reservation called with:', argsJson);
 
+    let result: { ok: boolean; message?: string; missing_fields?: string[] };
 
+    try {
+      const args = JSON.parse(argsJson);
 
+      // 1. Validation
+      const missingFields: string[] = [];
+
+      // Check required fields from reservation_form_fields (enabled && required)
+      const requiredFields = this.reservationFields.filter(f => f.enabled !== false && f.required);
+      for (const f of requiredFields) {
+        // Check in answers or top-level args
+        const val = args.answers?.[f.field_key] || args[f.field_key];
+        if (!val || String(val).trim() === '') {
+          missingFields.push(f.label);
+        }
+      }
+
+      // Validate party_size: must be positive integer
+      if (!args.party_size || args.party_size <= 0 || !Number.isInteger(args.party_size)) {
+        missingFields.push('party_size (正の整数が必要です)');
+      }
+
+      // Validate requested_date: must be YYYY-MM-DD
+      if (!args.requested_date || !/^\d{4}-\d{2}-\d{2}$/.test(args.requested_date)) {
+        missingFields.push('requested_date (YYYY-MM-DD形式が必要です)');
+      }
+
+      // Validate requested_time: must be HH:mm
+      if (!args.requested_time || !/^\d{2}:\d{2}$/.test(args.requested_time)) {
+        missingFields.push('requested_time (HH:mm形式が必要です)');
+      }
+
+      if (missingFields.length > 0) {
+        console.log('❌ Validation failed, missing fields:', missingFields);
+        result = { ok: false, message: '必須項目が不足しています', missing_fields: missingFields };
+      } else {
+        // 2. DB Insert (with conflict handling)
+        const insertResult = await this.insertReservationFromTool(args);
+        result = insertResult;
+      }
+    } catch (err) {
+      console.error('❌ verify_reservation error:', err);
+      result = { ok: false, message: 'サーバーエラーが発生しました' };
+    }
+
+    // Log tool call for debugging and audit
+    this.logEvent({
+      event: 'tool_call',
+      tool: 'verify_reservation',
+      call_id: callId,
+      args: argsJson,
+      result: JSON.stringify(result)
+    });
+
+    // 3. Send function_call_output back to the model
+    this.sendJson({
+      type: 'conversation.item.create',
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: JSON.stringify(result)
+      }
+    });
+
+    // 4. Trigger response.create to continue conversation
+    this.sendJson({
+      type: 'response.create',
+      response: { modalities: ['text', 'audio'] }
+    });
+
+    console.log('📤 function_call_output sent, conversation continues');
+  }
+
+  /**
+   * Insert reservation into DB from tool call.
+   * Uses call_sid as unique key with conflict handling.
+   */
+  private async insertReservationFromTool(args: any): Promise<{ ok: boolean; message?: string }> {
+    if (!this.userId) {
+      return { ok: false, message: 'User not identified' };
+    }
+
+    const callSid = this.options.callSid;
+
+    // Build answers object (field_key -> value for DB, label -> value for notifications)
+    const dbAnswers: Record<string, any> = {};
+    const notificationAnswers: Record<string, any> = {};
+
+    for (const f of this.reservationFields) {
+      const val = args.answers?.[f.field_key] || args[f.field_key] || '';
+      dbAnswers[f.field_key] = val;
+      notificationAnswers[f.label] = val;
+    }
+
+    // Check if reservation already exists for this call_sid
+    const { data: existing } = await this.supabase
+      .from('reservation_requests')
+      .select('id')
+      .eq('call_sid', callSid)
+      .single();
+
+    if (existing) {
+      console.log(`🔄 Reservation already exists for call_sid ${callSid} (ID: ${existing.id})`);
+      return { ok: true, message: '予約は既に登録済みです' };
+    }
+
+    // Insert new reservation
+    try {
+      const { data: newRes, error: insertErr } = await this.supabase
+        .from('reservation_requests')
+        .insert({
+          user_id: this.userId,
+          call_sid: callSid,
+          customer_phone: this.callerNumber || 'Unknown',
+          customer_name: args.customer_name || 'Unknown',
+          requested_date: args.requested_date,
+          requested_time: args.requested_time,
+          party_size: args.party_size,
+          status: 'pending',
+          answers: dbAnswers,
+          source: 'phone_call_realtime_tool'
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        if (insertErr.code === '23505') {
+          // Unique constraint violation - already exists (race condition)
+          console.log('⚠️ Race condition detected, reservation already exists');
+          return { ok: true, message: '予約は既に登録済みです' };
+        }
+        throw insertErr;
+      }
+
+      console.log('✅ Reservation created via tool:', newRes.id);
+      this.reservationCreated = true;
+
+      // Send notification (only on new insert)
+      await notificationService.notifyReservation({
+        user_id: this.userId,
+        customer_name: args.customer_name || 'Unknown',
+        customer_phone: this.callerNumber || 'Unknown',
+        party_size: args.party_size,
+        requested_date: args.requested_date,
+        requested_time: args.requested_time,
+        requested_datetime_text: `${args.requested_date} ${args.requested_time}`,
+        answers: notificationAnswers
+      });
+
+      return { ok: true, message: '予約を受け付けました' };
+    } catch (dbErr) {
+      console.error('❌ DB error in insertReservationFromTool:', dbErr);
+      return { ok: false, message: 'データベースエラーが発生しました' };
+    }
+  }
+
+  // =========================================================================
 
   private sendJson(payload: any) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -818,12 +1049,35 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
         // Report usage to Stripe for billing
         await this.reportUsageToStripe(this.userId, durationSeconds);
 
-        // Unified Reservation Creation (Phase 1 Refactor)
-        // Call finalizeReservation ONLY here
-        await this.finalizeReservation(callLog.id, formattedTranscript);
+        // Reservation handling depends on tooling mode
+        if (config.realtimeToolingReservation) {
+          // Tooling mode: Reservation already saved via verify_reservation tool
+          // Just link the call_log_id to the existing reservation
+          await this.linkCallLogToReservation(callLog.id);
+        } else {
+          // Legacy mode: Create reservation from state machine / LLM extraction
+          await this.finalizeReservation(callLog.id, formattedTranscript);
+        }
       }
     } catch (err) {
       console.error('❌ Error saving call log:', err);
+    }
+  }
+
+  /**
+   * Link call_log_id to existing reservation (for tooling mode)
+   * Called after call ends when reservation was created via verify_reservation tool
+   */
+  private async linkCallLogToReservation(callLogId: string) {
+    const { error } = await this.supabase
+      .from('reservation_requests')
+      .update({ call_log_id: callLogId })
+      .eq('call_sid', this.options.callSid);
+
+    if (error) {
+      console.warn('⚠️ Failed to link call_log_id to reservation:', error.message);
+    } else {
+      console.log('🔗 Linked call_log_id to reservation');
     }
   }
 
