@@ -19,7 +19,7 @@ export interface TwilioMediaMessage {
 
 export interface RealtimeLogEvent {
   timestamp: string;
-  event: 'start' | 'user_utterance' | 'assistant_response' | 'tool_call' | 'stop' | string;
+  event: 'start' | 'user_utterance' | 'assistant_response' | 'tool_call' | 'realtime_error' | 'stop' | string;
   role?: 'user' | 'assistant' | 'system';
   text?: string;
   streamSid?: string;
@@ -31,4 +31,7 @@ export interface RealtimeLogEvent {
   call_id?: string;
   args?: string;
   result?: string;
+  // Error event fields
+  error_code?: string;
+  error_message?: string;
 }

@@ -7,7 +7,7 @@ import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
-import { SUMMARY_SYSTEM_PROMPT } from './prompts';
+import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT } from './prompts';
 import { notificationService } from './notifications';
 import { DebugObserver } from './debugObserver';
 
@@ -241,7 +241,11 @@ ${fieldMapping}
       });
 
       ws.on('error', (err: Error) => {
-        console.error('Realtime session error', err);
+        console.error('❌ [WebSocket Error] Realtime session connection error:', {
+          message: err.message,
+          name: err.name,
+          stack: err.stack,
+        });
         reject(err);
       });
     });
@@ -316,7 +320,22 @@ ${fieldMapping}
       // Debug: Log OpenAI Realtime events
       this.debugObserver.logRealtimeEvent(event);
 
+      // OpenAI Realtime API error event - explicit capture for observability
+      if (event.type === 'error') {
+        console.error('❌ [OpenAI Realtime Error]', {
+          error_code: event.error?.code,
+          error_message: event.error?.message,
+          event_id: event.event_id,
+        });
+        this.logEvent({
+          event: 'realtime_error',
+          error_code: event.error?.code,
+          error_message: event.error?.message,
+        });
+      }
+
       if (event.type === 'session.updated') {
+        console.log('✅ [Session] session.update confirmed by API');
         // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
         if (!this.hasRequestedInitialResponse) {
           console.log('✨ Session updated, requesting initial response');
@@ -598,6 +617,135 @@ ${fieldMapping}
   }
 
   /**
+   * Fallback: LLMを使って会話ログから予約情報を抽出する
+   * finalize_reservation ツールがトリガーされなかった場合に使用
+   */
+  private async extractReservationFromTranscript(): Promise<{
+    intent: 'reservation' | 'other';
+    customer_name?: string;
+    party_size?: number;
+    requested_date?: string;
+    requested_time?: string;
+    requested_datetime_text?: string;
+    answers?: Record<string, any>;
+    confidence?: number;
+  } | null> {
+    if (this.transcript.length === 0) {
+      return null;
+    }
+
+    const formattedTranscript = this.formatTranscriptForSummary();
+    console.log('🔄 [Fallback] Extracting reservation from transcript...');
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: config.openAiSummaryModel,
+        messages: [
+          {
+            role: 'system',
+            content: RESERVATION_EXTRACTION_SYSTEM_PROMPT
+          },
+          {
+            role: 'user',
+            content: `【通話内容】\n${formattedTranscript}\n\n【現在日時】\n${new Date().toISOString()}`
+          }
+        ],
+        response_format: { type: 'json_object' },
+        max_tokens: 500,
+      });
+
+      const content = completion.choices[0]?.message?.content?.trim();
+      if (!content) {
+        console.warn('⚠️ [Fallback] LLM returned empty content');
+        return null;
+      }
+
+      const extracted = JSON.parse(content);
+      console.log('📋 [Fallback] Extracted data:', JSON.stringify(extracted, null, 2));
+
+      return extracted;
+    } catch (err) {
+      console.error('❌ [Fallback] Failed to extract reservation:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Fallback: 抽出された予約情報をDBに保存
+   */
+  private async saveReservationFallback(extracted: {
+    customer_name?: string;
+    party_size?: number;
+    requested_date?: string;
+    requested_time?: string;
+    requested_datetime_text?: string;
+    answers?: Record<string, any>;
+  }, callLogId: string): Promise<void> {
+    if (!this.userId) return;
+
+    const callSid = this.options.callSid;
+
+    // Check if reservation already exists for this call_sid
+    const { data: existing } = await this.supabase
+      .from('reservation_requests')
+      .select('id')
+      .eq('call_sid', callSid)
+      .single();
+
+    if (existing) {
+      console.log(`⚠️ [Fallback] Reservation already exists for call_sid ${callSid}, skipping`);
+      return;
+    }
+
+    try {
+      const { data: newRes, error: insertErr } = await this.supabase
+        .from('reservation_requests')
+        .insert({
+          user_id: this.userId,
+          call_sid: callSid,
+          call_log_id: callLogId,
+          customer_phone: this.callerNumber || 'Unknown',
+          customer_name: extracted.customer_name || 'Unknown',
+          requested_date: extracted.requested_date || null,
+          requested_time: extracted.requested_time || null,
+          party_size: extracted.party_size || null,
+          status: 'pending',
+          answers: extracted.answers || {},
+          source: 'phone_call_realtime_fallback',
+          internal_note: `[LLM Fallback] ${extracted.requested_datetime_text || ''}`
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        if (insertErr.code === '23505') {
+          console.log('⚠️ [Fallback] Race condition, reservation already exists');
+          return;
+        }
+        throw insertErr;
+      }
+
+      console.log('✅ [Fallback] Reservation created:', newRes.id);
+      this.reservationCreated = true;
+
+      // Send notification
+      await notificationService.notifyReservation({
+        user_id: this.userId,
+        customer_name: extracted.customer_name || 'Unknown',
+        customer_phone: this.callerNumber || 'Unknown',
+        party_size: extracted.party_size || 0,
+        requested_date: extracted.requested_date || '',
+        requested_time: extracted.requested_time || '',
+        requested_datetime_text: extracted.requested_datetime_text || '',
+        answers: extracted.answers || {}
+      });
+
+    } catch (err) {
+      console.error('❌ [Fallback] Failed to save reservation:', err);
+    }
+  }
+
+  /**
    * Report call usage to Stripe for usage-based billing
    */
   private async reportUsageToStripe(userId: string, durationSeconds: number) {
@@ -755,6 +903,24 @@ ${fieldMapping}
         // Reservation already saved via finalize_reservation tool
         // Just link the call_log_id to the existing reservation (if any)
         await this.linkCallLogToReservation(callLog.id);
+
+        // Fallback: If no reservation was created via tool, try to extract from transcript
+        if (!this.reservationCreated) {
+          console.log('🔄 [Fallback] No reservation created via tool, attempting LLM extraction...');
+          const extracted = await this.extractReservationFromTranscript();
+
+          if (extracted && extracted.intent === 'reservation') {
+            // Only save if there's at least some useful info
+            if (extracted.customer_name || extracted.requested_date || extracted.party_size) {
+              console.log('📝 [Fallback] Reservation intent detected, saving to DB...');
+              await this.saveReservationFallback(extracted, callLog.id);
+            } else {
+              console.log('ℹ️ [Fallback] Reservation intent detected but insufficient data, skipping');
+            }
+          } else {
+            console.log('ℹ️ [Fallback] No reservation intent detected in conversation');
+          }
+        }
       }
     } catch (err) {
       console.error('❌ Error saving call log:', err);
