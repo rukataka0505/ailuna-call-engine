@@ -103,7 +103,7 @@ export class RealtimeSession {
         } else {
           this.userId = profile[0].id;
 
-          // サブスクリプション状態を確認
+          // サブスクリプション状態を確認する
           if (!profile[0].is_subscribed) {
             console.warn(`🚫 [RealtimeSession] User ${this.userId} is not subscribed. Continuing (gatekeeper at index.ts should have handled this, or this is a debug access).`);
             // throw new Error('User subscription is not active. Call rejected.'); // Phase 3: Downgraded to warning
