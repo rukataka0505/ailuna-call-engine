@@ -15,10 +15,15 @@ import { handleLineWebhook } from './lineWebhook';
 const app = express();
 
 // LINE Webhook: Must be before global body parser to handle raw body signature validation
-app.post('/line/webhook', lineMiddleware({
-  channelAccessToken: config.lineChannelAccessToken,
-  channelSecret: config.lineChannelSecret,
-}), handleLineWebhook);
+if (config.lineChannelAccessToken && config.lineChannelSecret) {
+  app.post('/line/webhook', lineMiddleware({
+    channelAccessToken: config.lineChannelAccessToken,
+    channelSecret: config.lineChannelSecret,
+  }), handleLineWebhook);
+  console.log('✅ LINE Webhook registered');
+} else {
+  console.log('ℹ️ LINE Webhook skipped (Missing credentials)');
+}
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
