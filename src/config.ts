@@ -27,6 +27,16 @@ export const config = {
   supabaseServiceRoleKey: requiredEnv('SUPABASE_SERVICE_ROLE_KEY', ''),
   stripeSecretKey: requiredEnv('STRIPE_SECRET_KEY'),
   stripeUsagePriceId: requiredEnv('STRIPE_USAGE_PRICE_ID'),
+
+  // Notification (Email / LINE)
+  smtpHost: requiredEnv('SMTP_HOST', ''),
+  smtpPort: parseInt(requiredEnv('SMTP_PORT', '587'), 10),
+  smtpUser: requiredEnv('SMTP_USER', ''),
+  smtpPass: requiredEnv('SMTP_PASS', ''),
+  emailFrom: requiredEnv('EMAIL_FROM', ''),
+
+  lineChannelAccessToken: requiredEnv('LINE_CHANNEL_ACCESS_TOKEN', ''),
+  lineChannelSecret: requiredEnv('LINE_CHANNEL_SECRET', ''),
 };
 
 type Config = typeof config;

@@ -8,7 +8,17 @@ import { TwilioMediaMessage } from './types';
 
 import { RealtimeSession } from './realtimeSession';
 
+import { middleware as lineMiddleware } from '@line/bot-sdk';
+import { handleLineWebhook } from './lineWebhook';
+
 const app = express();
+
+// LINE Webhook: Must be before global body parser to handle raw body signature validation
+app.post('/line/webhook', lineMiddleware({
+  channelAccessToken: config.lineChannelAccessToken,
+  channelSecret: config.lineChannelSecret,
+}), handleLineWebhook);
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 

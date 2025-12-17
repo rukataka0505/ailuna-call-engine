@@ -7,7 +7,8 @@ import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
-import { SUMMARY_SYSTEM_PROMPT } from './prompts';
+import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT } from './prompts';
+import { notificationService } from './notifications';
 
 export interface RealtimeSessionOptions {
   streamSid: string;
@@ -36,6 +37,7 @@ export class RealtimeSession {
   private turnCount = 0;
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
   private hasRequestedInitialResponse = false;
+  private reservationFields: any[] = [];
 
   private userId?: string;
   private callerNumber?: string;
@@ -96,6 +98,40 @@ export class RealtimeSession {
           } else {
             console.log('✨ Loaded dynamic settings from Supabase');
 
+            // 予約ヒアリング項目の取得
+            let reservationInstruction = '';
+            try {
+              const { data: formFields, error: formError } = await this.supabase
+                .from('reservation_form_fields')
+                .select('label, required, options')
+                .eq('user_id', this.userId)
+                .eq('enabled', true)
+                .order('sort_order', { ascending: true });
+
+              if (!formError && formFields && formFields.length > 0) {
+                this.reservationFields = formFields;
+                console.log(`📋 Found ${formFields.length} reservation fields.`);
+                const fieldList = formFields.map(f => {
+                  const reqStr = f.required ? '(必須)' : '(任意)';
+                  const optsStr = (Array.isArray(f.options) && f.options.length > 0)
+                    ? ` [選択肢: ${f.options.join(', ')}]`
+                    : '';
+                  return `- ${f.label} ${reqStr}${optsStr}`;
+                }).join('\n');
+
+                reservationInstruction = `
+【予約ヒアリング項目】
+予約希望のお客様には、以下の項目を必ず確認してください。
+${fieldList}
+
+【予約確定のフロー】
+- 通話中には「予約確定」と言わず、「確認して後ほどSMSでご連絡します」と伝えてください。
+`;
+              }
+            } catch (err) {
+              console.warn('⚠️ Failed to fetch reservation fields:', err);
+            }
+
             // config_metadata から greeting_message を取得（デフォルト値あり）
             const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
 
@@ -111,8 +147,15 @@ export class RealtimeSession {
 `;
 
             // 既存のプロンプトと結合
-            if (promptData.system_prompt) {
-              this.currentSystemPrompt = `${fixedInstruction}\n\n${promptData.system_prompt}`;
+            let basePrompt = promptData.system_prompt || '';
+
+            // 予約項目がある場合は追記
+            if (reservationInstruction) {
+              basePrompt += `\n\n${reservationInstruction}`;
+            }
+
+            if (basePrompt) {
+              this.currentSystemPrompt = `${fixedInstruction}\n\n${basePrompt}`;
             } else {
               // system_prompt が空の場合でも、挨拶指示は適用
               this.currentSystemPrompt = fixedInstruction;
@@ -447,7 +490,7 @@ export class RealtimeSession {
       const durationSeconds = Math.round((endTime - this.startTime) / 1000);
       console.log('⏱️ Call duration:', durationSeconds, 'seconds');
 
-      const { error } = await this.supabase.from('call_logs').insert({
+      const { data: callLog, error } = await this.supabase.from('call_logs').insert({
         user_id: this.userId,
         call_sid: this.options.callSid,
         caller_number: this.callerNumber,
@@ -457,17 +500,84 @@ export class RealtimeSession {
         status: 'completed',
         duration_seconds: durationSeconds,
         created_at: new Date().toISOString(),
-      });
+      }).select().single();
+
       if (error) {
         console.error('❌ Failed to save call log to Supabase:', error);
       } else {
-        console.log('✅ Call log saved to Supabase');
+        console.log('✅ Call log saved to Supabase (ID:', callLog.id, ')');
 
         // Report usage to Stripe for billing
         await this.reportUsageToStripe(this.userId, durationSeconds);
+
+        // 予約抽出と保存 (非同期で実行)
+        this.extractAndSaveReservation(this.formatTranscriptForSummary(), callLog.id);
       }
     } catch (err) {
       console.error('❌ Error saving call log:', err);
+    }
+  }
+
+  private async extractAndSaveReservation(transcript: string, callLogId?: string) {
+    if (!transcript || !this.userId) return;
+
+    try {
+      console.log('📝 Extracting reservation details...');
+
+      const completion = await this.openai.chat.completions.create({
+        model: config.openAiSummaryModel,
+        messages: [
+          {
+            role: 'developer',
+            content: RESERVATION_EXTRACTION_SYSTEM_PROMPT
+          },
+          {
+            role: 'user',
+            content: `transcript:\n${transcript}\n\nreservation_form_fields:\n${JSON.stringify(this.reservationFields)}`
+          }
+        ],
+        response_format: { type: 'json_object' }
+      });
+
+      const content = completion.choices[0]?.message?.content;
+      if (!content) {
+        console.warn('⚠️ Reservation extraction returned empty content');
+        return;
+      }
+
+      console.log('📝 Extraction result:', content);
+      const result = JSON.parse(content);
+
+      if (result.intent === 'reservation') {
+        const { data: reservation, error } = await this.supabase.from('reservation_requests').insert({
+          user_id: this.userId,
+          status: 'pending',
+          source: 'phone',
+          call_log_id: callLogId,
+          call_sid: this.options.callSid,
+          customer_phone: result.customer_phone || this.callerNumber,
+          customer_name: result.customer_name,
+          party_size: result.party_size,
+          requested_date: result.requested_date,
+          requested_time: result.requested_time,
+          requested_datetime_text: result.requested_datetime_text,
+          answers: result.answers || {},
+        }).select().single();
+
+        if (error) {
+          console.error('❌ Failed to save reservation request:', error);
+        } else {
+          console.log('✅ Reservation request saved successfully');
+          // 店舗へ通知 (非同期)
+          notificationService.notifyReservation(reservation).catch(err => {
+            console.error('❌ Failed to send reservation notification:', err);
+          });
+        }
+      } else {
+        console.log('ℹ️ Intent is not reservation, skipping creation.');
+      }
+    } catch (err) {
+      console.error('❌ Error in extractAndSaveReservation:', err);
     }
   }
 

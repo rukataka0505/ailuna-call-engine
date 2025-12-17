@@ -20,11 +20,13 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@line/bot-sdk": "^10.5.0",
     "@supabase/supabase-js": "^2.84.0",
     "@types/express": "^5.0.5",
     "body-parser": "^2.2.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "nodemailer": "^7.0.11",
     "openai": "^6.9.1",
     "stripe": "^17.5.0",
     "twilio": "^5.10.5",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/nodemailer": "^7.0.4",
     "@types/ws": "^8.18.1",
     "nodemon": "^3.1.11",
     "ts-node-dev": "^2.0.0",
