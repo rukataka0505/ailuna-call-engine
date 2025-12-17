@@ -42,6 +42,7 @@ export class RealtimeSession {
   private connected = false;
   private isUserSpeaking = false;
   private turnCount = 0;
+
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
   private hasRequestedInitialResponse = false;
   private reservationFields: any[] = [];
@@ -250,10 +251,7 @@ ${fieldList}
         this.connected = false;
         console.log('🤖 OpenAI Realtime session closed');
 
-        // Refined Phase 1: Insert Reservation on Close if Done
-        if (this.reservationState.stage === 'done') {
-          await this.createReservationRequest();
-        }
+        // Phase 1 Refactor: Reservation creation is now handled in saveCallLogToSupabase -> finalizeReservation
       });
 
       ws.on('error', (err: Error) => {
@@ -635,155 +633,7 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
     }
   }
 
-  // Phase 10: Create Reservation Request (Idempotent)
-  private async createReservationRequest() {
-    if (!this.userId) return;
 
-    // Idempotency Check (In-Memory)
-    if (this.reservationCreated) {
-      console.warn('⚠️ Reservation already created for this session. Skipping duplicate.');
-      return;
-    }
-    this.reservationCreated = true;
-
-    console.log('📝 Creating Reservation Request from State Machine...');
-    const filled = this.reservationState.filled;
-
-    // Helper to find value by heuristic keys
-    const findValue = (...keys: string[]) => {
-      for (const k of keys) {
-        // Try exact match or partial match in field_key
-        const match = Object.keys(filled).find(fk => fk.toLowerCase().includes(k.toLowerCase()));
-        if (match) return filled[match];
-      }
-      return null;
-    };
-
-    // Try to map standard columns
-    const customerName = findValue('name', '名前');
-    const partySizeStr = findValue('count', 'party', '人数');
-    const partySize = partySizeStr ? parseInt(partySizeStr.replace(/[^0-9]/g, ''), 10) : null;
-
-    // Date/Time Parsing
-    const dateStr = findValue('date', 'time', '日時');
-    let requestedDate: string | null = null;
-    let requestedTime: string | null = null;
-
-    if (dateStr) {
-      const d = new Date(dateStr);
-      if (!isNaN(d.getTime())) {
-        // ISO string is YYYY-MM-DDTHH:mm:ss.sssZ
-        // We want YYYY-MM-DD and HH:mm
-        const iso = d.toISOString();
-        requestedDate = iso.split('T')[0];
-        requestedTime = iso.split('T')[1].substring(0, 5);
-      } else {
-        console.warn(`⚠️ Could not parse dateStr: ${dateStr}`);
-      }
-    }
-
-    // Prepare answers for DB (key: field_key) and Notification (key: label)
-    const dbAnswers: Record<string, any> = {};
-    const notificationAnswers: Record<string, any> = {};
-
-    for (const f of this.reservationFields) {
-      const val = filled[f.field_key] || '';
-      // DB: store with field_key
-      dbAnswers[f.field_key] = val;
-      // Notification: store with label (readable)
-      notificationAnswers[f.label] = val;
-    }
-
-    const callSid = this.options.callSid;
-
-    try {
-      // 1. Check existence by call_sid
-      const { data: existing } = await this.supabase
-        .from('reservation_requests')
-        .select('id')
-        .eq('call_sid', callSid)
-        .single();
-
-      if (existing) {
-        console.log(`🔄 Reservation already exists for call_sid=${callSid}. Updating...`);
-        // UPDATE (No Notification, preserve status)
-        const { error: updateError } = await this.supabase
-          .from('reservation_requests')
-          .update({
-            customer_name: customerName || 'Unknown',
-            requested_date: requestedDate,
-            requested_time: requestedTime,
-            party_size: partySize,
-            answers: dbAnswers, // DB Schema Compliance: field_key
-            // Do NOT update status, sms_body_sent, sms_sent_at
-          })
-          .eq('id', existing.id);
-
-        if (updateError) {
-          console.error('❌ Failed to update existing reservation:', updateError);
-        } else {
-          console.log('✅ Reservation updated successfully.');
-        }
-        return; // Exit after update
-      }
-
-      // 2. INSERT (if not found)
-      const { data, error } = await this.supabase
-        .from('reservation_requests')
-        .insert({
-          user_id: this.userId,
-          call_sid: callSid,
-          customer_phone: this.callerNumber || 'Unknown',
-          customer_name: customerName || 'Unknown',
-          requested_date: requestedDate, // YYYY-MM-DD
-          requested_time: requestedTime, // HH:mm
-          party_size: partySize,
-          status: 'pending',
-          answers: dbAnswers, // DB Schema Compliance: field_key
-          // transcription column removed
-        })
-        .select()
-        .single();
-
-      if (error) {
-        // Handle Unique Violation (Race Condition)
-        if (error.code === '23505') {
-          console.warn('⚠️ Unique constraint violation (race condition). Falling back to update.');
-          const { error: retryUpdateError } = await this.supabase
-            .from('reservation_requests')
-            .update({
-              customer_name: customerName || 'Unknown',
-              requested_date: requestedDate,
-              requested_time: requestedTime,
-              party_size: partySize,
-              answers: dbAnswers, // DB Schema Compliance: field_key
-            })
-            .eq('call_sid', callSid);
-
-          if (retryUpdateError) console.error('❌ Failed to update on fallback:', retryUpdateError);
-          return;
-        }
-        throw error;
-      }
-
-      console.log('✅ Reservation Request Created:', data.id);
-
-      // Send Notifications (ONLY on fresh insert)
-      await notificationService.notifyReservation({
-        user_id: this.userId,
-        customer_name: customerName || 'Unknown',
-        customer_phone: this.callerNumber || 'Unknown',
-        party_size: partySize,
-        requested_date: requestedDate,
-        requested_time: requestedTime,
-        requested_datetime_text: dateStr,
-        answers: notificationAnswers
-      });
-
-    } catch (err) {
-      console.error('❌ Failed to create reservation request:', err);
-    }
-  }
 
 
 
@@ -903,10 +753,12 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
 
     // 通話内容の要約を生成
     let summary = '要約なし';
+    const formattedTranscript = this.formatTranscriptForSummary();
+
     try {
       if (this.transcript.length > 0) {
         console.log(`🤖 Generating call summary... (Model: ${config.openAiSummaryModel})`);
-        const formattedTranscript = this.formatTranscriptForSummary();
+
 
         const completion = await this.openai.chat.completions.create({
           model: config.openAiSummaryModel,
@@ -966,74 +818,236 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
         // Report usage to Stripe for billing
         await this.reportUsageToStripe(this.userId, durationSeconds);
 
-        // 予約抽出と保存 (非同期で実行)
-        this.extractAndSaveReservation(this.formatTranscriptForSummary(), callLog.id);
+        // Unified Reservation Creation (Phase 1 Refactor)
+        // Call finalizeReservation ONLY here
+        await this.finalizeReservation(callLog.id, formattedTranscript);
       }
     } catch (err) {
       console.error('❌ Error saving call log:', err);
     }
   }
 
-  private async extractAndSaveReservation(transcript: string, callLogId?: string) {
-    if (!transcript || !this.userId) return;
+  /**
+   * 単一の予約作成パス (finalizeReservation)
+   * saveCallLogToSupabase の後に呼ばれる
+   */
+  private async finalizeReservation(callLogId: string, formattedTranscript: string) {
+    if (!this.userId) return;
+    if (this.reservationCreated) {
+      console.warn('⚠️ Reservation already finalized. Skipping duplicate.');
+      return;
+    }
+    this.reservationCreated = true;
+    console.log('🚀 Finalizing Reservation...');
 
-    try {
-      console.log('📝 Extracting reservation details...');
+    // 1. Check if we have all required fields collected via State Machine
+    const missingRequired = this.reservationFields.filter(f => f.required && !this.reservationState.filled[f.field_key]);
+    const isStateValid = missingRequired.length === 0 && Object.keys(this.reservationState.filled).length > 0;
 
-      const completion = await this.openai.chat.completions.create({
-        model: config.openAiSummaryModel,
-        messages: [
-          {
-            role: 'developer',
-            content: RESERVATION_EXTRACTION_SYSTEM_PROMPT
-          },
-          {
-            role: 'user',
-            content: `transcript:\n${transcript}\n\nreservation_form_fields:\n${JSON.stringify(this.reservationFields)}`
+    let finalData: any = {};
+    let source = '';
+
+    if (isStateValid) {
+      console.log('✅ State machine has all required fields. Using collected data.');
+      finalData = { ...this.reservationState.filled };
+      source = 'state_machine';
+    } else {
+      console.log('⚠️ State machine incomplete (missing required). Falling back to LLM extraction.');
+      // Fallback: Extract from transcript
+      try {
+        const completion = await this.openai.chat.completions.create({
+          model: config.openAiSummaryModel,
+          messages: [
+            { role: 'developer', content: RESERVATION_EXTRACTION_SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: `transcript:\n${formattedTranscript}\n\nreservation_form_fields:\n${JSON.stringify(this.reservationFields)}`
+            }
+          ],
+          response_format: { type: 'json_object' }
+        });
+        const content = completion.choices[0]?.message?.content;
+        if (content) {
+          const result = JSON.parse(content);
+          if (result.intent !== 'reservation') {
+            console.log('ℹ️ Extraction determined no reservation intent. Aborting.');
+            return;
           }
-        ],
-        response_format: { type: 'json_object' }
-      });
+          // Normalize extracted data to field keys if possible, or use answers directly
+          finalData = result.answers || {};
 
-      const content = completion.choices[0]?.message?.content;
-      if (!content) {
-        console.warn('⚠️ Reservation extraction returned empty content');
+          // Helper to ensure standard fields are present if extracted
+          if (result.customer_name) finalData['customer_name'] = result.customer_name;
+          if (result.party_size) finalData['party_size'] = result.party_size;
+          if (result.requested_date) finalData['requested_date'] = result.requested_date;
+          if (result.requested_time) finalData['requested_time'] = result.requested_time;
+
+          source = 'llm_extraction';
+          console.log('📝 Extracted data via LLM:', finalData);
+        }
+      } catch (err) {
+        console.error('❌ Failed fallback extraction:', err);
         return;
       }
+    }
 
-      console.log('📝 Extraction result:', content);
-      const result = JSON.parse(content);
+    // 2. Prepare DB Record
+    // Map finalData to DB columns and answers json
 
-      if (result.intent === 'reservation') {
-        const { data: reservation, error } = await this.supabase.from('reservation_requests').insert({
-          user_id: this.userId,
-          status: 'pending',
-          source: 'phone',
-          call_log_id: callLogId,
-          call_sid: this.options.callSid,
-          customer_phone: result.customer_phone || this.callerNumber,
-          customer_name: result.customer_name,
-          party_size: result.party_size,
-          requested_date: result.requested_date,
-          requested_time: result.requested_time,
-          requested_datetime_text: result.requested_datetime_text,
-          answers: result.answers || {},
-        }).select().single();
+    // Helper to find value by heuristic keys
+    const findValue = (...keys: string[]) => {
+      for (const k of keys) {
+        const match = Object.keys(finalData).find(fk => fk.toLowerCase().includes(k.toLowerCase()));
+        if (match) return finalData[match];
+      }
+      return null;
+    };
 
-        if (error) {
-          console.error('❌ Failed to save reservation request:', error);
+    const customerName = findValue('name', '名前', 'customer_name');
+    const partySizeStr = findValue('count', 'party', '人数', 'party_size');
+    const partySize = partySizeStr ? parseInt(String(partySizeStr).replace(/[^0-9]/g, ''), 10) : null;
+
+    // Strict Date/Time Extraction
+    // Priority: 1. Exact field key 'requested_date'/'requested_time'
+    //           2. Heuristic keys 'date'/'time'
+    //           3. Parse from datetime string
+
+    let requestedDate: string | null = null;
+    let requestedTime: string | null = null;
+
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    const timeRegex = /^\d{2}:\d{2}$/;
+
+    // 1. Try Field Keys
+    if (finalData['requested_date'] && dateRegex.test(finalData['requested_date'])) {
+      requestedDate = finalData['requested_date'];
+    }
+    if (finalData['requested_time'] && timeRegex.test(finalData['requested_time'])) {
+      requestedTime = finalData['requested_time'];
+    }
+
+    // 2. Try Heuristics if missing
+    if (!requestedDate) {
+      const dVal = findValue('date', '日時'); // e.g. "2025-12-20"
+      if (dVal && dateRegex.test(dVal)) requestedDate = dVal;
+    }
+    if (!requestedTime) {
+      const tVal = findValue('time', '時間'); // e.g. "19:00"
+      if (tVal && timeRegex.test(tVal)) requestedTime = tVal;
+    }
+
+    // 3. Fallback: Parse ISO/DateTime string
+    if (!requestedDate || !requestedTime) {
+      const dateStr = findValue('date', 'time', '日時', 'requested_datetime_text');
+      if (dateStr) {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+          const iso = d.toISOString(); // YYYY-MM-DDTHH:mm:ss.sssZ
+          if (!requestedDate) requestedDate = iso.split('T')[0];
+          if (!requestedTime) requestedTime = iso.split('T')[1].substring(0, 5);
+        }
+      }
+    }
+
+    // Construct Answers JSON (key: field_key)
+    const dbAnswers: Record<string, any> = {};
+    const notificationAnswers: Record<string, any> = {};
+
+    for (const f of this.reservationFields) {
+      const val = finalData[f.field_key] || '';
+      dbAnswers[f.field_key] = val;
+      notificationAnswers[f.label] = val; // Use Label for Notification
+    }
+
+    // 3. Upsert to DB
+    const callSid = this.options.callSid;
+    try {
+      // Check existing
+      const { data: existing } = await this.supabase
+        .from('reservation_requests')
+        .select('id')
+        .eq('call_sid', callSid)
+        .single();
+
+      if (existing) {
+        console.log(`🔄 Updating existing reservation (ID: ${existing.id})`);
+        const { error: upErr } = await this.supabase
+          .from('reservation_requests')
+          .update({
+            customer_name: customerName || 'Unknown',
+            requested_date: requestedDate,
+            requested_time: requestedTime,
+            party_size: partySize,
+            answers: dbAnswers,
+            call_log_id: callLogId
+          })
+          .eq('id', existing.id);
+
+        if (upErr) console.error('❌ Update failed:', upErr);
+        else console.log('✅ Reservation updated.');
+
+      } else {
+        console.log('🆕 Inserting new reservation request...');
+        const { data: newRes, error: inErr } = await this.supabase
+          .from('reservation_requests')
+          .insert({
+            user_id: this.userId,
+            call_sid: callSid,
+            call_log_id: callLogId,
+            customer_phone: this.callerNumber || 'Unknown',
+            customer_name: customerName || 'Unknown',
+            requested_date: requestedDate,
+            requested_time: requestedTime,
+            // requested_datetime_text is not a column in DB schema based on previous code, 
+            // but user request implies it might be useful. 
+            // However previous insert used `requested_datetime_text: dateStr`.
+            // If schema doesn't have it, it will error. 
+            // Let's check `dateStr` usage.
+            // Looking at previous valid code: `requested_datetime_text: dateStr` was passed to insert.
+            // I'll keep it if defined.
+            requested_datetime_text: findValue('date', 'time', '日時', 'requested_datetime_text') || null,
+            party_size: partySize,
+            status: 'pending',
+            answers: dbAnswers,
+            source: source
+          })
+          .select()
+          .single();
+
+        if (inErr) {
+          if (inErr.code === '23505') {
+            console.warn('⚠️ Race condition insert -> update fallback.');
+            await this.supabase
+              .from('reservation_requests')
+              .update({
+                customer_name: customerName || 'Unknown',
+                requested_date: requestedDate,
+                requested_time: requestedTime,
+                party_size: partySize,
+                answers: dbAnswers,
+                call_log_id: callLogId
+              })
+              .eq('call_sid', callSid);
+          } else {
+            throw inErr;
+          }
         } else {
-          console.log('✅ Reservation request saved successfully');
-          // 店舗へ通知 (非同期)
-          notificationService.notifyReservation(reservation).catch(err => {
-            console.error('❌ Failed to send reservation notification:', err);
+          console.log('✅ New reservation created:', newRes.id);
+          // Notify with notificationAnswers (Labels)
+          await notificationService.notifyReservation({
+            user_id: this.userId,
+            customer_name: customerName || 'Unknown',
+            customer_phone: this.callerNumber || 'Unknown',
+            party_size: partySize,
+            requested_date: requestedDate,
+            requested_time: requestedTime,
+            requested_datetime_text: findValue('date', 'time', '日時', 'requested_datetime_text') || '',
+            answers: notificationAnswers // LABELS
           });
         }
-      } else {
-        console.log('ℹ️ Intent is not reservation, skipping creation.');
       }
-    } catch (err) {
-      console.error('❌ Error in extractAndSaveReservation:', err);
+    } catch (dbErr) {
+      console.error('❌ DB Fatal in finalizeReservation:', dbErr);
     }
   }
 

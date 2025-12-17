@@ -5,14 +5,25 @@ import { Client, WebhookEvent, MessageEvent, validateSignature } from '@line/bot
 import { config } from './config';
 
 // LINE Client initialization
-const lineClient = new Client({
-    channelAccessToken: config.lineChannelAccessToken,
-    channelSecret: config.lineChannelSecret,
-});
+let lineClient: Client | null = null;
+if (config.lineChannelAccessToken && config.lineChannelSecret) {
+    lineClient = new Client({
+        channelAccessToken: config.lineChannelAccessToken,
+        channelSecret: config.lineChannelSecret,
+    });
+} else {
+    console.warn('⚠️ LINE Channel Access Token or Secret is missing. LINE features will be disabled.');
+}
 
 const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
 
 export const handleLineWebhook = async (req: Request, res: Response) => {
+    if (!lineClient) {
+        console.warn('⚠️ LINE Webhook received but client is not initialized.');
+        res.status(501).json({ message: 'LINE not configured' });
+        return;
+    }
+
     try {
         const events: WebhookEvent[] = req.body.events;
 
@@ -98,6 +109,10 @@ async function handleLinkToken(replyToken: string, lineUserId: string, code: str
 }
 
 async function replyText(replyToken: string, text: string) {
+    if (!lineClient) {
+        console.warn('⚠️ Cannot reply to LINE: Client not initialized.');
+        return;
+    }
     try {
         await lineClient.replyMessage(replyToken, {
             type: 'text',
