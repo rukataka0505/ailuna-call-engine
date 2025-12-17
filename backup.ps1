@@ -34,17 +34,18 @@ $message = "backup: auto-backup on $timestamp"
 Write-Host "Committing with message: '$message'..." -ForegroundColor Cyan
 git commit -m "$message"
 
-# 4. Push to remote current branch
-Write-Host "Pushing to origin $branch..." -ForegroundColor Cyan
-git push -u origin $branch
+# 4. Push to remote main
+Write-Host "Pushing to origin main..." -ForegroundColor Cyan
+git push origin HEAD:main
 
 if ($LASTEXITCODE -eq 0) {
     $commitHash = git rev-parse --short HEAD
     Write-Host "----------------------------------------"
     Write-Host "Backup completed successfully!" -ForegroundColor Green
-    Write-Host "Pushed to: origin/$branch" -ForegroundColor Green
+    Write-Host "Pushed to: origin/main" -ForegroundColor Green
     Write-Host "Commit:    $commitHash" -ForegroundColor Green
-} else {
+}
+else {
     Write-Error "Backup failed during push. Please check your network or git configuration."
     exit 1
 }
