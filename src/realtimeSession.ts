@@ -7,7 +7,7 @@ import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
-import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT, MODE_CLASSIFICATION_PROMPT, SLOT_EXTRACTION_PROMPT, CONFIRMATION_CHECK_PROMPT, FIELD_IDENTIFICATION_PROMPT } from './prompts';
+import { SUMMARY_SYSTEM_PROMPT } from './prompts';
 import { notificationService } from './notifications';
 import { DebugObserver } from './debugObserver';
 
@@ -19,13 +19,6 @@ export interface RealtimeSessionOptions {
   fromPhoneNumber?: string;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
-}
-
-// Phase 7: Reservation State Machine
-interface ReservationState {
-  stage: 'collect' | 'confirm' | 'cleanup' | 'done';
-  currentFieldKey: string | null;
-  filled: Record<string, string>;
 }
 
 /**
@@ -49,16 +42,6 @@ export class RealtimeSession {
   private hasRequestedInitialResponse = false;
   private reservationFields: any[] = [];
 
-  // Phase 6: Mode Separation
-  private mode: 'reservation' | 'other' = 'reservation'; // Default to reservation
-  private gateDone = false; // Flag to check if initial intent classification is done
-
-  // Phase 7: State Machine
-  private reservationState: ReservationState = {
-    stage: 'collect',
-    currentFieldKey: null,
-    filled: {}
-  };
   private reservationCreated = false; // Prevent duplicate reservations
 
   private userId?: string;
@@ -138,26 +121,20 @@ export class RealtimeSession {
                 .eq('enabled', true)
                 .order('display_order', { ascending: true });
 
-              if (!formError && formFields && formFields.length > 0) {
-                this.reservationFields = formFields;
-                console.log(`📋 Found ${formFields.length} reservation fields.`);
-                console.log(`📋 First field key: ${formFields[0].field_key}`);
+              if (formFields && formFields.length > 0) {
+                // Build field list with field_key mapping for finalize_reservation
+                const fieldMapping = formFields.map(f => {
+                  const reqStr = f.required ? '(必須)' : '(任意)';
+                  return `  - ${f.field_key}: ${f.label} ${reqStr}`;
+                }).join('\n');
 
-                // Build field list with different formats based on tooling mode
-                if (config.realtimeToolingReservation) {
-                  // Tooling mode: Include field_key mapping for verify_reservation
-                  const fieldMapping = formFields.map(f => {
-                    const reqStr = f.required ? '(必須)' : '(任意)';
-                    return `  - ${f.field_key}: ${f.label} ${reqStr}`;
-                  }).join('\n');
-
-                  reservationInstruction = `
+                reservationInstruction = `
 【予約ヒアリング項目】
 以下の情報を自然な会話の中で聞き出してください：
 ${fieldMapping}
 
-【verify_reservation ツールの使い方】
-- 必須項目（customer_name、party_size、requested_date、requested_time）が全て揃ったら verify_reservation を呼び出してください。
+【finalize_reservation ツールの使い方】
+- 必須項目（customer_name、party_size、requested_date、requested_time）が全て揃ったら finalize_reservation を呼び出してください。
 - ツールが ok:true を返すまで「予約完了」「承りました」「予約を受け付けました」等の確定表現は絶対に禁止です。
 - ok:false / missing_fields が返された場合は、不足項目を聞き直してください。
 - ツールが成功したら「確認して後ほどSMSでご連絡します」と伝えてください。
@@ -171,34 +148,6 @@ ${fieldMapping}
 - 必ず正の整数で指定してください（例：2）
 - 「2名」「2人」などは数値 2 に変換してください。
 `;
-                } else {
-                  // Legacy mode: Simple field list
-                  const fieldList = formFields.map(f => {
-                    const reqStr = f.required ? '(必須)' : '(任意)';
-
-                    // Handle options safely
-                    let optionsArray: string[] = [];
-                    if (Array.isArray(f.options)) {
-                      optionsArray = f.options;
-                    } else if (typeof f.options === 'string') {
-                      try { optionsArray = JSON.parse(f.options); } catch (e) { /* ignore */ }
-                    }
-
-                    const optsStr = (optionsArray.length > 0)
-                      ? ` [選択肢: ${optionsArray.join(', ')}]`
-                      : '';
-                    return `- ${f.label} ${reqStr}${optsStr}`;
-                  }).join('\n');
-
-                  reservationInstruction = `
-【予約ヒアリング項目】
-予約希望のお客様には、以下の項目を必ず確認してください。
-${fieldList}
-
-【予約確定のフロー】
-- 通話中には「予約確定」と言わず、「確認して後ほどSMSでご連絡します」と伝えてください。
-`;
-                }
               }
             } catch (err) {
               console.warn('⚠️ Failed to fetch reservation fields:', err);
@@ -299,12 +248,12 @@ ${fieldList}
   }
 
   private sendSessionUpdate() {
-    // Build tools config when feature flag is ON
-    const toolsConfig = config.realtimeToolingReservation ? {
+    // Always include finalize_reservation tool
+    const toolsConfig = {
       tools: [{
         type: 'function',
-        name: 'verify_reservation',
-        description: '予約内容を検証し、DBに保存します。お客様から全ての必須項目（お名前、人数、日付、時間）を聞き取った後に呼び出してください。',
+        name: 'finalize_reservation',
+        description: 'ユーザーが名前・日時・人数を全て伝え、予約確定の意思を示した場合にのみ呼び出してください。それまでは会話を続けてください。',
         parameters: {
           type: 'object',
           properties: {
@@ -318,7 +267,7 @@ ${fieldList}
         }
       }],
       tool_choice: 'auto'
-    } : {};
+    };
 
     const payload = {
       type: 'session.update',
@@ -329,7 +278,7 @@ ${fieldList}
           threshold: 0.6,
           prefix_padding_ms: 300,
           silence_duration_ms: 800,
-          create_response: config.realtimeToolingReservation, // true when tooling enabled, false otherwise
+          create_response: true, // Always auto-respond via VAD
           interrupt_response: true,
         },
         input_audio_format: 'g711_ulaw',
@@ -412,14 +361,12 @@ ${fieldList}
           console.log(`🤖 AI応答 #${this.turnCount}: ${text}`);
         }
 
-        // Function Call Detection (Realtime Tooling)
-        if (config.realtimeToolingReservation) {
-          const functionCalls = output.filter((item: any) => item.type === 'function_call');
-          for (const fc of functionCalls) {
-            if (fc.name === 'verify_reservation') {
-              console.log(`🔧 Function call detected: ${fc.name} (call_id: ${fc.call_id})`);
-              await this.handleVerifyReservation(fc.call_id, fc.arguments);
-            }
+        // Function Call Detection
+        const functionCalls = output.filter((item: any) => item.type === 'function_call');
+        for (const fc of functionCalls) {
+          if (fc.name === 'finalize_reservation') {
+            console.log(`🔧 Function call detected: ${fc.name} (call_id: ${fc.call_id})`);
+            await this.handleFinalizeReservation(fc.call_id, fc.arguments);
           }
         }
       }
@@ -447,18 +394,8 @@ ${fieldList}
           });
           this.transcript.push({ role: 'user', text, timestamp: new Date().toISOString() });
           console.log(`🗣️ ユーザー発話 #${this.turnCount}: ${text}`);
-
-          // Skip state machine when Realtime tooling is enabled (model auto-responds)
-          if (!config.realtimeToolingReservation) {
-            // Phase 6 & 7: Mode Separation & State Machine (legacy path)
-            if (!this.gateDone) {
-              this.checkIntent(text); // Async check, will trigger handleTurn inside
-            } else {
-              // Already gated, proceed to normal turn handling
-              this.handleTurn(text);
-            }
-          }
-          // When flag ON: model handles conversation via create_response: true
+          // Model handles conversation flow via create_response: true
+          // No manual state machine intervention needed
         }
       }
     } catch (err) {
@@ -466,260 +403,15 @@ ${fieldList}
     }
   }
 
-  // Phase 6: Intent Classification
-  private async checkIntent(transcript: string) {
-    try {
-      console.log('🤔 Checking intent for:', transcript);
-      const completion = await this.openai.chat.completions.create({
-        model: config.openAiSummaryModel, // Use summary model (likely 4o-mini or similar) for speed/cost
-        messages: [
-          { role: 'developer', content: MODE_CLASSIFICATION_PROMPT },
-          { role: 'user', content: transcript }
-        ],
-        response_format: { type: 'json_object' },
-        max_completion_tokens: 100,
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (content) {
-        const result = JSON.parse(content);
-        console.log(`🧠 Intent Decision: ${result.mode} (Reason: ${result.reason})`);
-
-        if (result.mode === 'other') {
-          this.mode = 'other';
-          console.log('🔀 Mode switched to: OTHER');
-        } else {
-          console.log('➡️ Mode remains: RESERVATION');
-        }
-      }
-      this.gateDone = true;
-
-      // Proceed to handle the turn with the decided mode (Phase 7)
-      await this.handleTurn(transcript);
-
-    } catch (err) {
-      console.error('❌ Error checking intent:', err);
-      // Fallback: stay in reservation mode, but mark gate as done to avoid repeated checks
-      this.gateDone = true;
-      await this.handleTurn(transcript);
-    }
-  }
-
-  // Phase 8: Slot Extraction
-  private async extractSlots(transcript: string) {
-    try {
-      console.log('🧩 Extracting slots from:', transcript);
-
-      const completion = await this.openai.chat.completions.create({
-        model: config.openAiSummaryModel,
-        messages: [
-          { role: 'developer', content: SLOT_EXTRACTION_PROMPT },
-          {
-            role: 'user',
-            content: `
-User Transcript: ${transcript}
-Form Fields: ${JSON.stringify(this.reservationFields)}
-Already Filled: ${JSON.stringify(this.reservationState.filled)}
-             `
-          }
-        ],
-        response_format: { type: 'json_object' },
-        max_completion_tokens: 500,
-      });
-
-      const content = completion.choices[0]?.message?.content;
-      if (content) {
-        const result = JSON.parse(content);
-        console.log('🧩 Extraction Result:', result); // { filled: { key: val }, confidence: ... }
-
-        if (result.filled) {
-          this.reservationState.filled = {
-            ...this.reservationState.filled,
-            ...result.filled
-          };
-          console.log('✅ Updated filled slots:', this.reservationState.filled);
-        }
-      }
-    } catch (err) {
-      console.error('❌ Error extracting slots:', err);
-    }
-  }
-
-  // Phase 9: State Machine & Turn Handling
-  private async handleTurn(userTranscript: string) {
-    // 1. If in 'other' mode, just delegate to AI (standard conversation)
-    if (this.mode === 'other') {
-      console.log('🗣️ [Mode: Other] Delegating to standard AI response');
-      this.sendJson({
-        type: 'response.create',
-        response: {
-          modalities: ['text', 'audio'],
-          instructions: `ユーザーの発言「${userTranscript}」に対して、適切な回答をしてください。あなたは飲食店のアシスタントです。`
-        }
-      });
-      return;
-    }
-
-    // 2. If in 'reservation' mode, use slot filling state machine
-    if (this.mode === 'reservation') {
-
-      // -- State: COLLECT --
-      if (this.reservationState.stage === 'collect') {
-        // Extract slots from user input
-        await this.extractSlots(userTranscript);
-
-        // Find next required field
-        const nextField = this.reservationFields.find(f =>
-          f.required && !this.reservationState.filled[f.field_key]
-        );
-
-        if (nextField) {
-          this.reservationState.currentFieldKey = nextField.field_key;
-          console.log(`❓ Asking next question for: ${nextField.label}`);
-          const questionText = nextField.label + 'を教えていただけますか？';
-          this.sendJson({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: `次の質問をユーザーに投げかけてください。「${questionText}」とだけ発話してください。挨拶や余計な言葉は不要です。`
-            }
-          });
-          return;
-        } else {
-          // All fields collected -> Move to Confirm
-          this.reservationState.stage = 'confirm';
-          // Generate summary and ASK confirmation immediately
-          console.log('✅ All fields collected. Starting confirmation.');
-          const summary = Object.entries(this.reservationState.filled)
-            .map(([key, val]) => {
-              const label = this.reservationFields.find(f => f.field_key === key)?.label || key;
-              return `${label}: ${val}`;
-            }).join('、');
-
-          this.sendJson({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: `予約内容を確認します。「${summary}。こちらでよろしいでしょうか？」と発話してください。`
-            }
-          });
-          return;
-        }
-      }
-
-      // -- State: CONFIRM --
-      if (this.reservationState.stage === 'confirm') {
-        // Check user response: Yes/No/Correction
-        const check = await this.checkConfirmation(userTranscript);
-        console.log('🤔 Confirmation Check:', check);
-
-        if (check.result === 'yes') {
-          this.reservationState.stage = 'done';
-
-          // Refined Phase 1: Removed direct insert. Set stage only.
-          // await this.createReservationRequest(); 
-          this.sendJson({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: `「承知いたしました。確認して後ほどSMSでご連絡いたします。」と発話してください。`
-            }
-          });
-          return;
-        } else {
-          // correction or no
-          await this.extractSlots(userTranscript); // Try correction
-
-          this.reservationState.stage = 'cleanup';
-          this.sendJson({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: `「失礼いたしました。訂正する項目を教えていただけますか？」と発話してください。`
-            }
-          });
-          return;
-        }
-      }
-
-      // -- State: CLEANUP --
-      if (this.reservationState.stage === 'cleanup') {
-        const target = await this.identifyCleanupField(userTranscript);
-        if (target && target.field_key) {
-          console.log(`🧹 Clearing field: ${target.field_key}`);
-          delete this.reservationState.filled[target.field_key];
-          this.reservationState.stage = 'collect';
-          // Trigger collect logic immediately
-          await this.handleTurn('');
-          return;
-        } else {
-          this.sendJson({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: `「申し訳ございません。どの項目を訂正しますか？日付、時間、人数などでお答えください。」と発話してください。`
-            }
-          });
-          return;
-        }
-      }
-
-      // -- State: DONE --
-      if (this.reservationState.stage === 'done') {
-        this.sendJson({ type: 'response.create' });
-      }
-    }
-  }
-
-  // Phase 9 Helper: Yes/No Check
-  private async checkConfirmation(transcript: string): Promise<{ result: 'yes' | 'no' | 'correction' }> {
-    try {
-      const completion = await this.openai.chat.completions.create({
-        model: config.openAiSummaryModel,
-        messages: [
-          { role: 'developer', content: CONFIRMATION_CHECK_PROMPT },
-          { role: 'user', content: transcript }
-        ],
-        response_format: { type: 'json_object' },
-        max_completion_tokens: 50,
-      });
-      const content = completion.choices[0]?.message?.content;
-      return content ? JSON.parse(content) : { result: 'no' };
-    } catch (e) {
-      return { result: 'no' };
-    }
-  }
-
-  // Phase 9 Helper: Identify Field
-  private async identifyCleanupField(transcript: string): Promise<{ field_key: string | null }> {
-    try {
-      const completion = await this.openai.chat.completions.create({
-        model: config.openAiSummaryModel,
-        messages: [
-          { role: 'developer', content: FIELD_IDENTIFICATION_PROMPT },
-          {
-            role: 'user',
-            content: `User Transcript: ${transcript}\nForm Fields: ${JSON.stringify(this.reservationFields)}`
-          }
-        ],
-        response_format: { type: 'json_object' },
-        max_completion_tokens: 50,
-      });
-      const content = completion.choices[0]?.message?.content;
-      return content ? JSON.parse(content) : { field_key: null };
-    } catch (e) {
-      return { field_key: null };
-    }
-  }
 
   // ================== Realtime Tooling: verify_reservation ==================
 
   /**
-   * Handle the verify_reservation function call from the model.
+   * Handle the finalize_reservation function call from the model.
    * Validates required fields, saves to DB, and sends function_call_output.
    */
-  private async handleVerifyReservation(callId: string, argsJson: string) {
-    console.log('🔧 verify_reservation called with:', argsJson);
+  private async handleFinalizeReservation(callId: string, argsJson: string) {
+    console.log('🔧 finalize_reservation called with:', argsJson);
 
     let result: { ok: boolean; message?: string; missing_fields?: string[] };
 
@@ -763,14 +455,14 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
         result = insertResult;
       }
     } catch (err) {
-      console.error('❌ verify_reservation error:', err);
+      console.error('❌ finalize_reservation error:', err);
       result = { ok: false, message: 'サーバーエラーが発生しました' };
     }
 
     // Log tool call for debugging and audit
     this.logEvent({
       event: 'tool_call',
-      tool: 'verify_reservation',
+      tool: 'finalize_reservation',
       call_id: callId,
       args: argsJson,
       result: JSON.stringify(result)
@@ -1060,15 +752,9 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
         // Report usage to Stripe for billing
         await this.reportUsageToStripe(this.userId, durationSeconds);
 
-        // Reservation handling depends on tooling mode
-        if (config.realtimeToolingReservation) {
-          // Tooling mode: Reservation already saved via verify_reservation tool
-          // Just link the call_log_id to the existing reservation
-          await this.linkCallLogToReservation(callLog.id);
-        } else {
-          // Legacy mode: Create reservation from state machine / LLM extraction
-          await this.finalizeReservation(callLog.id, formattedTranscript);
-        }
+        // Reservation already saved via finalize_reservation tool
+        // Just link the call_log_id to the existing reservation (if any)
+        await this.linkCallLogToReservation(callLog.id);
       }
     } catch (err) {
       console.error('❌ Error saving call log:', err);
@@ -1076,8 +762,7 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
   }
 
   /**
-   * Link call_log_id to existing reservation (for tooling mode)
-   * Called after call ends when reservation was created via verify_reservation tool
+   * Link call_log_id to existing reservation (if any was created via finalize_reservation tool)
    */
   private async linkCallLogToReservation(callLogId: string) {
     const { error } = await this.supabase
@@ -1089,230 +774,6 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
       console.warn('⚠️ Failed to link call_log_id to reservation:', error.message);
     } else {
       console.log('🔗 Linked call_log_id to reservation');
-    }
-  }
-
-  /**
-   * 単一の予約作成パス (finalizeReservation)
-   * saveCallLogToSupabase の後に呼ばれる
-   */
-  private async finalizeReservation(callLogId: string, formattedTranscript: string) {
-    if (!this.userId) return;
-    if (this.reservationCreated) {
-      console.warn('⚠️ Reservation already finalized. Skipping duplicate.');
-      return;
-    }
-    this.reservationCreated = true;
-    console.log('🚀 Finalizing Reservation...');
-
-    // 1. Check if we have all required fields collected via State Machine
-    const missingRequired = this.reservationFields.filter(f => f.required && !this.reservationState.filled[f.field_key]);
-    const isStateValid = missingRequired.length === 0 && Object.keys(this.reservationState.filled).length > 0;
-
-    let finalData: any = {};
-    let source = '';
-
-    if (isStateValid) {
-      console.log('✅ State machine has all required fields. Using collected data.');
-      finalData = { ...this.reservationState.filled };
-      source = 'state_machine';
-    } else {
-      console.log('⚠️ State machine incomplete (missing required). Falling back to LLM extraction.');
-      // Fallback: Extract from transcript
-      try {
-        const completion = await this.openai.chat.completions.create({
-          model: config.openAiSummaryModel,
-          messages: [
-            { role: 'developer', content: RESERVATION_EXTRACTION_SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: `transcript:\n${formattedTranscript}\n\nreservation_form_fields:\n${JSON.stringify(this.reservationFields)}`
-            }
-          ],
-          response_format: { type: 'json_object' }
-        });
-        const content = completion.choices[0]?.message?.content;
-        if (content) {
-          const result = JSON.parse(content);
-          if (result.intent !== 'reservation') {
-            console.log('ℹ️ Extraction determined no reservation intent. Aborting.');
-            return;
-          }
-          // Normalize extracted data to field keys if possible, or use answers directly
-          finalData = result.answers || {};
-
-          // Helper to ensure standard fields are present if extracted
-          if (result.customer_name) finalData['customer_name'] = result.customer_name;
-          if (result.party_size) finalData['party_size'] = result.party_size;
-          if (result.requested_date) finalData['requested_date'] = result.requested_date;
-          if (result.requested_time) finalData['requested_time'] = result.requested_time;
-
-          source = 'llm_extraction';
-          console.log('📝 Extracted data via LLM:', finalData);
-        }
-      } catch (err) {
-        console.error('❌ Failed fallback extraction:', err);
-        return;
-      }
-    }
-
-    // 2. Prepare DB Record
-    // Map finalData to DB columns and answers json
-
-    // Helper to find value by heuristic keys
-    const findValue = (...keys: string[]) => {
-      for (const k of keys) {
-        const match = Object.keys(finalData).find(fk => fk.toLowerCase().includes(k.toLowerCase()));
-        if (match) return finalData[match];
-      }
-      return null;
-    };
-
-    const customerName = findValue('name', '名前', 'customer_name');
-    const partySizeStr = findValue('count', 'party', '人数', 'party_size');
-    const partySize = partySizeStr ? parseInt(String(partySizeStr).replace(/[^0-9]/g, ''), 10) : null;
-
-    // Strict Date/Time Extraction
-    // Priority: 1. Exact field key 'requested_date'/'requested_time'
-    //           2. Heuristic keys 'date'/'time'
-    //           3. Parse from datetime string
-
-    let requestedDate: string | null = null;
-    let requestedTime: string | null = null;
-
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    const timeRegex = /^\d{2}:\d{2}$/;
-
-    // 1. Try Field Keys
-    if (finalData['requested_date'] && dateRegex.test(finalData['requested_date'])) {
-      requestedDate = finalData['requested_date'];
-    }
-    if (finalData['requested_time'] && timeRegex.test(finalData['requested_time'])) {
-      requestedTime = finalData['requested_time'];
-    }
-
-    // 2. Try Heuristics if missing
-    if (!requestedDate) {
-      const dVal = findValue('date', '日時'); // e.g. "2025-12-20"
-      if (dVal && dateRegex.test(dVal)) requestedDate = dVal;
-    }
-    if (!requestedTime) {
-      const tVal = findValue('time', '時間'); // e.g. "19:00"
-      if (tVal && timeRegex.test(tVal)) requestedTime = tVal;
-    }
-
-    // 3. Fallback: Parse ISO/DateTime string
-    if (!requestedDate || !requestedTime) {
-      const dateStr = findValue('date', 'time', '日時', 'requested_datetime_text');
-      if (dateStr) {
-        const d = new Date(dateStr);
-        if (!isNaN(d.getTime())) {
-          const iso = d.toISOString(); // YYYY-MM-DDTHH:mm:ss.sssZ
-          if (!requestedDate) requestedDate = iso.split('T')[0];
-          if (!requestedTime) requestedTime = iso.split('T')[1].substring(0, 5);
-        }
-      }
-    }
-
-    // Construct Answers JSON (key: field_key)
-    const dbAnswers: Record<string, any> = {};
-    const notificationAnswers: Record<string, any> = {};
-
-    for (const f of this.reservationFields) {
-      const val = finalData[f.field_key] || '';
-      dbAnswers[f.field_key] = val;
-      notificationAnswers[f.label] = val; // Use Label for Notification
-    }
-
-    // 3. Upsert to DB
-    const callSid = this.options.callSid;
-    try {
-      // Check existing
-      const { data: existing } = await this.supabase
-        .from('reservation_requests')
-        .select('id')
-        .eq('call_sid', callSid)
-        .single();
-
-      if (existing) {
-        console.log(`🔄 Updating existing reservation (ID: ${existing.id})`);
-        const { error: upErr } = await this.supabase
-          .from('reservation_requests')
-          .update({
-            customer_name: customerName || 'Unknown',
-            requested_date: requestedDate,
-            requested_time: requestedTime,
-            party_size: partySize,
-            answers: dbAnswers,
-            call_log_id: callLogId
-          })
-          .eq('id', existing.id);
-
-        if (upErr) console.error('❌ Update failed:', upErr);
-        else console.log('✅ Reservation updated.');
-
-      } else {
-        console.log('🆕 Inserting new reservation request...');
-        const { data: newRes, error: inErr } = await this.supabase
-          .from('reservation_requests')
-          .insert({
-            user_id: this.userId,
-            call_sid: callSid,
-            call_log_id: callLogId,
-            customer_phone: this.callerNumber || 'Unknown',
-            customer_name: customerName || 'Unknown',
-            requested_date: requestedDate,
-            requested_time: requestedTime,
-            // requested_datetime_text is not a column in DB schema based on previous code, 
-            // but user request implies it might be useful. 
-            // However previous insert used `requested_datetime_text: dateStr`.
-            // If schema doesn't have it, it will error. 
-            // Let's check `dateStr` usage.
-            // Looking at previous valid code: `requested_datetime_text: dateStr` was passed to insert.
-            // I'll keep it if defined.
-            requested_datetime_text: findValue('date', 'time', '日時', 'requested_datetime_text') || null,
-            party_size: partySize,
-            status: 'pending',
-            answers: dbAnswers,
-            source: source
-          })
-          .select()
-          .single();
-
-        if (inErr) {
-          if (inErr.code === '23505') {
-            console.warn('⚠️ Race condition insert -> update fallback.');
-            await this.supabase
-              .from('reservation_requests')
-              .update({
-                customer_name: customerName || 'Unknown',
-                requested_date: requestedDate,
-                requested_time: requestedTime,
-                party_size: partySize,
-                answers: dbAnswers,
-                call_log_id: callLogId
-              })
-              .eq('call_sid', callSid);
-          } else {
-            throw inErr;
-          }
-        } else {
-          console.log('✅ New reservation created:', newRes.id);
-          // Notify with notificationAnswers (Labels)
-          await notificationService.notifyReservation({
-            user_id: this.userId,
-            customer_name: customerName || 'Unknown',
-            customer_phone: this.callerNumber || 'Unknown',
-            party_size: partySize,
-            requested_date: requestedDate,
-            requested_time: requestedTime,
-            requested_datetime_text: findValue('date', 'time', '日時', 'requested_datetime_text') || '',
-            answers: notificationAnswers // LABELS
-          });
-        }
-      }
-    } catch (dbErr) {
-      console.error('❌ DB Fatal in finalizeReservation:', dbErr);
     }
   }
 

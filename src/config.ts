@@ -45,8 +45,6 @@ export const config = {
   lineChannelAccessToken: optionalEnv('LINE_CHANNEL_ACCESS_TOKEN'),
   lineChannelSecret: optionalEnv('LINE_CHANNEL_SECRET'),
 
-  // Feature Flags
-  realtimeToolingReservation: optionalEnv('REALTIME_TOOLING_RESERVATION') === '1',
 
   // Debug Observability Flags (default OFF)
   debugRealtimeEvents: optionalEnv('DEBUG_REALTIME_EVENTS') === '1',
