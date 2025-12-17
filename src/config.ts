@@ -23,8 +23,8 @@ export const config = {
   publicUrl: requiredEnv('PUBLIC_URL'), // Required for callback URLs
   webAppUrl: requiredEnv('WEB_APP_URL'), // Required for dashboard link
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),
-  openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'gpt-4o-realtime-preview-2024-10-01'),
-  openAiSummaryModel: requiredEnv('OPENAI_MODEL_MINI', 'gpt-4o-mini'),
+  openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'gpt-realtime'),
+  openAiSummaryModel: requiredEnv('OPENAI_MODEL_MINI', 'gpt-5-mini'),
   logDir: requiredEnv('LOG_DIR', path.join(process.cwd(), 'call_logs')),
   twilioAuthToken: requiredEnv('TWILIO_AUTH_TOKEN', ''), // Used? If empty, make sure it doesn't break unless used. Kept as required-ish with default empty for now if code depends on it being string.
   twilioAccountSid: requiredEnv('TWILIO_ACCOUNT_SID', ''),
