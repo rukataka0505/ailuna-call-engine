@@ -57,7 +57,7 @@ async function handleLinkToken(replyToken: string, lineUserId: string, code: str
     const { data: token, error: tokenError } = await supabase
         .from('line_link_tokens')
         .select('*')
-        .eq('token_code', code)
+        .eq('token', code) // Changed from token_code
         .is('used_at', null)
         .gt('expires_at', now)
         .single();
@@ -90,7 +90,7 @@ async function handleLinkToken(replyToken: string, lineUserId: string, code: str
     await supabase
         .from('line_link_tokens')
         .update({ used_at: new Date().toISOString() })
-        .eq('id', token.id);
+        .eq('token', code); // Changed from id to token, as id might not be reliable if we only have code context
 
     // 4. Success reply
     await replyText(replyToken, '✅ LINE連携が完了しました！\n今後、予約リクエストが届くとここに通知されます。');

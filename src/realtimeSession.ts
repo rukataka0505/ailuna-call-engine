@@ -7,7 +7,7 @@ import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
-import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT } from './prompts';
+import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT, MODE_CLASSIFICATION_PROMPT, SLOT_EXTRACTION_PROMPT, CONFIRMATION_CHECK_PROMPT, FIELD_IDENTIFICATION_PROMPT } from './prompts';
 import { notificationService } from './notifications';
 
 export interface RealtimeSessionOptions {
@@ -18,6 +18,13 @@ export interface RealtimeSessionOptions {
   fromPhoneNumber?: string;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
+}
+
+// Phase 7: Reservation State Machine
+interface ReservationState {
+  stage: 'collect' | 'confirm' | 'cleanup' | 'done';
+  currentFieldKey: string | null;
+  filled: Record<string, string>;
 }
 
 /**
@@ -38,6 +45,17 @@ export class RealtimeSession {
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
   private hasRequestedInitialResponse = false;
   private reservationFields: any[] = [];
+
+  // Phase 6: Mode Separation
+  private mode: 'reservation' | 'other' = 'reservation'; // Default to reservation
+  private gateDone = false; // Flag to check if initial intent classification is done
+
+  // Phase 7: State Machine
+  private reservationState: ReservationState = {
+    stage: 'collect',
+    currentFieldKey: null,
+    filled: {}
+  };
 
   private userId?: string;
   private callerNumber?: string;
@@ -145,16 +163,19 @@ ${fieldList}
 
             // config_metadata から greeting_message を取得（デフォルト値あり）
             const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
+            // config_metadata から reservation_gate_question を取得（デフォルト値あり）
+            const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
 
             // 固定の挨拶指示ブロックを作成
             const fixedInstruction = `
 【重要：第一声の指定】
 通話が開始された際、AIの「最初の発話」は必ず以下の文言を一言一句変えずに読み上げてください。
-挨拶文：${greeting}
+発話内容：${greeting} ${reservationGateQuestion}
 
 【厳守事項】
-- 挨拶文の直後に「ご用件はいかがでしょうか」「どうされましたか」などの問いかけを**絶対に**付け足さないでください。
-- 挨拶文のみを発話し、一度ターンを終了して、相手（ユーザー）の発言を待ってください。
+- 上記の「挨拶文 + 予約確認の問い」をセットで発話してください。
+- これ以外の言葉（例：「どうされましたか」などの自由な問いかけ）は付け足さないでください。
+- 一度ターンを終了して、相手（ユーザー）の発言を待ってください。
 `;
 
             // 既存のプロンプトと結合
@@ -242,7 +263,7 @@ ${fieldList}
           threshold: 0.6,
           prefix_padding_ms: 300,
           silence_duration_ms: 800,
-          create_response: true,
+          create_response: false, // Phase 7: Disable auto-response to control flow
           interrupt_response: true,
         },
         input_audio_format: 'g711_ulaw',
@@ -343,12 +364,343 @@ ${fieldList}
           });
           this.transcript.push({ role: 'user', text, timestamp: new Date().toISOString() });
           console.log(`🗣️ ユーザー発話 #${this.turnCount}: ${text}`);
+
+          // Phase 6 & 7: Mode Separation & State Machine
+          if (!this.gateDone) {
+            this.checkIntent(text); // Async check, will trigger handleTurn inside
+          } else {
+            // Already gated, proceed to normal turn handling
+            this.handleTurn(text);
+          }
         }
       }
     } catch (err) {
       console.error('Failed to parse realtime event', err, raw);
     }
   }
+
+  // Phase 6: Intent Classification
+  private async checkIntent(transcript: string) {
+    try {
+      console.log('🤔 Checking intent for:', transcript);
+      const completion = await this.openai.chat.completions.create({
+        model: config.openAiSummaryModel, // Use summary model (likely 4o-mini or similar) for speed/cost
+        messages: [
+          { role: 'developer', content: MODE_CLASSIFICATION_PROMPT },
+          { role: 'user', content: transcript }
+        ],
+        response_format: { type: 'json_object' },
+        max_completion_tokens: 100,
+      });
+
+      const content = completion.choices[0]?.message?.content;
+      if (content) {
+        const result = JSON.parse(content);
+        console.log(`🧠 Intent Decision: ${result.mode} (Reason: ${result.reason})`);
+
+        if (result.mode === 'other') {
+          this.mode = 'other';
+          console.log('🔀 Mode switched to: OTHER');
+        } else {
+          console.log('➡️ Mode remains: RESERVATION');
+        }
+      }
+      this.gateDone = true;
+
+      // Proceed to handle the turn with the decided mode (Phase 7)
+      await this.handleTurn(transcript);
+
+    } catch (err) {
+      console.error('❌ Error checking intent:', err);
+      // Fallback: stay in reservation mode, but mark gate as done to avoid repeated checks
+      this.gateDone = true;
+      await this.handleTurn(transcript);
+    }
+  }
+
+  // Phase 8: Slot Extraction
+  private async extractSlots(transcript: string) {
+    try {
+      console.log('🧩 Extracting slots from:', transcript);
+
+      const completion = await this.openai.chat.completions.create({
+        model: config.openAiSummaryModel,
+        messages: [
+          { role: 'developer', content: SLOT_EXTRACTION_PROMPT },
+          {
+            role: 'user',
+            content: `
+User Transcript: ${transcript}
+Form Fields: ${JSON.stringify(this.reservationFields)}
+Already Filled: ${JSON.stringify(this.reservationState.filled)}
+             `
+          }
+        ],
+        response_format: { type: 'json_object' },
+        max_completion_tokens: 500,
+      });
+
+      const content = completion.choices[0]?.message?.content;
+      if (content) {
+        const result = JSON.parse(content);
+        console.log('🧩 Extraction Result:', result); // { filled: { key: val }, confidence: ... }
+
+        if (result.filled) {
+          this.reservationState.filled = {
+            ...this.reservationState.filled,
+            ...result.filled
+          };
+          console.log('✅ Updated filled slots:', this.reservationState.filled);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error extracting slots:', err);
+    }
+  }
+
+  // Phase 9: State Machine & Turn Handling
+  private async handleTurn(userTranscript: string) {
+    // 1. If in 'other' mode, just delegate to AI (standard conversation)
+    if (this.mode === 'other') {
+      console.log('🗣️ [Mode: Other] Delegating to standard AI response');
+      this.sendJson({
+        type: 'response.create',
+        response: {
+          modalities: ['text', 'audio'],
+          instructions: `ユーザーの発言「${userTranscript}」に対して、適切な回答をしてください。あなたは飲食店のアシスタントです。`
+        }
+      });
+      return;
+    }
+
+    // 2. If in 'reservation' mode, use slot filling state machine
+    if (this.mode === 'reservation') {
+
+      // -- State: COLLECT --
+      if (this.reservationState.stage === 'collect') {
+        // Extract slots from user input
+        await this.extractSlots(userTranscript);
+
+        // Find next required field
+        const nextField = this.reservationFields.find(f =>
+          f.required && !this.reservationState.filled[f.field_key]
+        );
+
+        if (nextField) {
+          this.reservationState.currentFieldKey = nextField.field_key;
+          console.log(`❓ Asking next question for: ${nextField.label}`);
+          const questionText = nextField.label + 'を教えていただけますか？';
+          this.sendJson({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `次の質問をユーザーに投げかけてください。「${questionText}」とだけ発話してください。挨拶や余計な言葉は不要です。`
+            }
+          });
+          return;
+        } else {
+          // All fields collected -> Move to Confirm
+          this.reservationState.stage = 'confirm';
+          // Generate summary and ASK confirmation immediately
+          console.log('✅ All fields collected. Starting confirmation.');
+          const summary = Object.entries(this.reservationState.filled)
+            .map(([key, val]) => {
+              const label = this.reservationFields.find(f => f.field_key === key)?.label || key;
+              return `${label}: ${val}`;
+            }).join('、');
+
+          this.sendJson({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `予約内容を確認します。「${summary}。こちらでよろしいでしょうか？」と発話してください。`
+            }
+          });
+          return;
+        }
+      }
+
+      // -- State: CONFIRM --
+      if (this.reservationState.stage === 'confirm') {
+        // Check user response: Yes/No/Correction
+        const check = await this.checkConfirmation(userTranscript);
+        console.log('🤔 Confirmation Check:', check);
+
+        if (check.result === 'yes') {
+          this.reservationState.stage = 'done';
+          await this.createReservationRequest(); // Phase 10: Save to DB
+          this.sendJson({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `「承知いたしました。確認して後ほどSMSでご連絡いたします。」と発話してください。`
+            }
+          });
+          return;
+        } else {
+          // correction or no
+          await this.extractSlots(userTranscript); // Try correction
+
+          this.reservationState.stage = 'cleanup';
+          this.sendJson({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `「失礼いたしました。訂正する項目を教えていただけますか？」と発話してください。`
+            }
+          });
+          return;
+        }
+      }
+
+      // -- State: CLEANUP --
+      if (this.reservationState.stage === 'cleanup') {
+        const target = await this.identifyCleanupField(userTranscript);
+        if (target && target.field_key) {
+          console.log(`🧹 Clearing field: ${target.field_key}`);
+          delete this.reservationState.filled[target.field_key];
+          this.reservationState.stage = 'collect';
+          // Trigger collect logic immediately
+          await this.handleTurn('');
+          return;
+        } else {
+          this.sendJson({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: `「申し訳ございません。どの項目を訂正しますか？日付、時間、人数などでお答えください。」と発話してください。`
+            }
+          });
+          return;
+        }
+      }
+
+      // -- State: DONE --
+      if (this.reservationState.stage === 'done') {
+        this.sendJson({ type: 'response.create' });
+      }
+    }
+  }
+
+  // Phase 9 Helper: Yes/No Check
+  private async checkConfirmation(transcript: string): Promise<{ result: 'yes' | 'no' | 'correction' }> {
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: config.openAiSummaryModel,
+        messages: [
+          { role: 'developer', content: CONFIRMATION_CHECK_PROMPT },
+          { role: 'user', content: transcript }
+        ],
+        response_format: { type: 'json_object' },
+        max_completion_tokens: 50,
+      });
+      const content = completion.choices[0]?.message?.content;
+      return content ? JSON.parse(content) : { result: 'no' };
+    } catch (e) {
+      return { result: 'no' };
+    }
+  }
+
+  // Phase 9 Helper: Identify Field
+  private async identifyCleanupField(transcript: string): Promise<{ field_key: string | null }> {
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: config.openAiSummaryModel,
+        messages: [
+          { role: 'developer', content: FIELD_IDENTIFICATION_PROMPT },
+          {
+            role: 'user',
+            content: `User Transcript: ${transcript}\nForm Fields: ${JSON.stringify(this.reservationFields)}`
+          }
+        ],
+        response_format: { type: 'json_object' },
+        max_completion_tokens: 50,
+      });
+      const content = completion.choices[0]?.message?.content;
+      return content ? JSON.parse(content) : { field_key: null };
+    } catch (e) {
+      return { field_key: null };
+    }
+  }
+
+  // Phase 10: Create Reservation Request
+  private async createReservationRequest() {
+    if (!this.userId) return;
+
+    console.log('📝 Creating Reservation Request from State Machine...');
+    const filled = this.reservationState.filled;
+
+    // Helper to find value by heuristic keys
+    const findValue = (...keys: string[]) => {
+      for (const k of keys) {
+        // Try exact match or partial match in field_key
+        const match = Object.keys(filled).find(fk => fk.toLowerCase().includes(k.toLowerCase()));
+        if (match) return filled[match];
+      }
+      return null;
+    };
+
+    // Try to map standard columns
+    const customerName = findValue('name', '名前');
+    const partySizeStr = findValue('count', 'party', '人数');
+    const partySize = partySizeStr ? parseInt(partySizeStr.replace(/[^0-9]/g, ''), 10) : null;
+    // For date/time, we might have separate fields or one.
+    // Ideally we should have structured them better, but for now we store what we have.
+    const dateStr = findValue('date', 'time', '日時');
+    const requestedDate = !isNaN(Date.parse(dateStr || '')) ? new Date(dateStr!).toISOString() : null;
+
+    // We put EVERYTHING into answers for completeness
+    const answers = this.reservationFields.map(f => ({
+      field_key: f.field_key,
+      field_label: f.label,
+      answer: filled[f.field_key] || ''
+    }));
+
+    // Construct answer record for notification type (Simple Key-Value)
+    const answersRecord: Record<string, any> = {};
+    for (const f of this.reservationFields) {
+      answersRecord[f.label] = filled[f.field_key] || '';
+    }
+
+    try {
+      const { data, error } = await this.supabase
+        .from('reservation_requests')
+        .insert({
+          user_id: this.userId,
+          customer_phone: this.callerNumber || 'Unknown',
+          customer_name: customerName || 'Unknown',
+          requested_date: requestedDate,
+          party_size: partySize,
+          status: 'pending',
+          answers: answers, // JSONB
+          transcription: this.formatTranscriptForSummary(), // Backup
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      console.log('✅ Reservation Request Created:', data.id);
+
+      // Send Notifications
+      await notificationService.notifyReservation({
+        user_id: this.userId,
+        customer_name: customerName || 'Unknown',
+        customer_phone: this.callerNumber || 'Unknown',
+        party_size: partySize,
+        requested_date: requestedDate ? requestedDate.split('T')[0] : dateStr,
+        requested_time: requestedDate ? requestedDate.split('T')[1]?.substring(0, 5) : null,
+        requested_datetime_text: dateStr,
+        answers: answersRecord
+      });
+
+    } catch (err) {
+      console.error('❌ Failed to create reservation request:', err);
+    }
+  }
+
+
+
 
   private sendJson(payload: any) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
