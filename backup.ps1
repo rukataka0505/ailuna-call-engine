@@ -34,7 +34,15 @@ $message = "backup: auto-backup on $timestamp"
 Write-Host "Committing with message: '$message'..." -ForegroundColor Cyan
 git commit -m "$message"
 
-# 4. Push to remote main
+# 4. Pull changes from main to avoid conflicts
+Write-Host "Pulling latest changes from origin/main..." -ForegroundColor Cyan
+git pull origin main --no-edit
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Merge conflict detected during pull. Please resolve conflicts manually and then run backup again."
+    exit 1
+}
+
+# 5. Push to remote main
 Write-Host "Pushing to origin main..." -ForegroundColor Cyan
 git push origin HEAD:main
 
