@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
 import bodyParser from 'body-parser';
+import { createClient } from '@supabase/supabase-js';
 import { config } from './config';
 import { createLogFilePath, writeLog } from './logging';
 import { TwilioMediaMessage } from './types';
@@ -51,6 +52,51 @@ app.post('/incoming-call-realtime', async (req, res) => {
 
   const to = req.body.To;
   const from = req.body.From;
+
+  // --- Phase 3: Subscription Check Start ---
+  try {
+    const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('is_subscribed')
+      .eq('phone_number', to)
+      .single();
+
+    if (error || !profile) {
+      console.warn(`🚫 Rejection: No profile found for ${to}`);
+      const rejectTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="ja-JP">この番号は利用できません。</Say>
+  <Hangup/>
+</Response>`;
+      res.type('text/xml').send(rejectTwiml);
+      return;
+    }
+
+    if (!profile.is_subscribed) {
+      console.warn(`🚫 Rejection: User ${to} is not subscribed`);
+      const rejectTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="ja-JP">契約が無効です。</Say>
+  <Hangup/>
+</Response>`;
+      res.type('text/xml').send(rejectTwiml);
+      return;
+    }
+    console.log(`✅ Subscription verified for ${to}`);
+  } catch (err) {
+    console.error('❌ Error checking subscription:', err);
+    // On DB error, fail-closed (reject) for safety
+    const errorTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="ja-JP">システムエラーが発生しました。</Say>
+  <Hangup/>
+</Response>`;
+    res.type('text/xml').send(errorTwiml);
+    return;
+  }
+  // --- Phase 3: Subscription Check End ---
+
   // URLパラメータへの付与を廃止 (Twilio <Parameter> タグを使用するため)
   const wsUrl = buildWsUrl('/twilio-media');
   console.log('Generated WS URL:', wsUrl);
