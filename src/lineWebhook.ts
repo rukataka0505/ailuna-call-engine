@@ -68,40 +68,20 @@ async function handleLinkToken(replyToken: string, lineUserId: string, code: str
         return;
     }
 
-    // 2. Update store_notification_settings
-    // Check if settings exist first
-    const { data: currentSettings } = await supabase
+    // 2. Update store_notification_settings (Upsert)
+    // Existing values like notify_email_enabled will be preserved on update (PostgREST merge behavior),
+    // or use default on insert.
+    const { error: updateError } = await supabase
         .from('store_notification_settings')
-        .select('id')
-        .eq('user_id', token.user_id)
-        .single();
-
-    let updateError;
-    if (currentSettings) {
-        const { error } = await supabase
-            .from('store_notification_settings')
-            .update({
-                line_target_id: lineUserId,
-                notify_line_enabled: true, // Auto-enable on link
-                updated_at: new Date().toISOString()
-            })
-            .eq('user_id', token.user_id);
-        updateError = error;
-    } else {
-        // If no settings row exists yet, create one
-        const { error } = await supabase
-            .from('store_notification_settings')
-            .insert({
-                user_id: token.user_id,
-                line_target_id: lineUserId,
-                notify_line_enabled: true,
-                notify_email_enabled: false, // Default
-            });
-        updateError = error;
-    }
+        .upsert({
+            user_id: token.user_id,
+            line_target_id: lineUserId,
+            notify_line_enabled: true,
+            updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' });
 
     if (updateError) {
-        console.error('❌ Failed to update notification settings:', updateError);
+        console.error(`❌ Failed to update settings. userId=${token.user_id}, token=${code}, lineId=${lineUserId}`, updateError);
         await replyText(replyToken, '連携処理中にエラーが発生しました。管理者にお問い合わせください。');
         return;
     }

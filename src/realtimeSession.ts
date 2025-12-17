@@ -103,18 +103,29 @@ export class RealtimeSession {
             try {
               const { data: formFields, error: formError } = await this.supabase
                 .from('reservation_form_fields')
-                .select('label, required, options')
+                .select('field_key, label, field_type, required, options, description, display_order')
                 .eq('user_id', this.userId)
                 .eq('enabled', true)
-                .order('sort_order', { ascending: true });
+                .order('display_order', { ascending: true });
 
               if (!formError && formFields && formFields.length > 0) {
                 this.reservationFields = formFields;
                 console.log(`📋 Found ${formFields.length} reservation fields.`);
+                console.log(`📋 First field key: ${formFields[0].field_key}`);
+
                 const fieldList = formFields.map(f => {
                   const reqStr = f.required ? '(必須)' : '(任意)';
-                  const optsStr = (Array.isArray(f.options) && f.options.length > 0)
-                    ? ` [選択肢: ${f.options.join(', ')}]`
+
+                  // Handle options safely (could be array or JSON string depending on DB driver behavior)
+                  let optionsArray: string[] = [];
+                  if (Array.isArray(f.options)) {
+                    optionsArray = f.options;
+                  } else if (typeof f.options === 'string') {
+                    try { optionsArray = JSON.parse(f.options); } catch (e) { /* ignore */ }
+                  }
+
+                  const optsStr = (optionsArray.length > 0)
+                    ? ` [選択肢: ${optionsArray.join(', ')}]`
                     : '';
                   return `- ${f.label} ${reqStr}${optsStr}`;
                 }).join('\n');

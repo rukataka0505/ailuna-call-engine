@@ -63,7 +63,7 @@ export class NotificationService {
             return;
         }
 
-        const dashboardUrl = `${config.publicUrl}/dashboard`;
+        const dashboardUrl = `${config.webAppUrl}/dashboard`;
         // Assuming dashboard URL format. 
         // Ideally this might be a separate config or base URL. 
         // Using config.publicUrl if available or falling back to a known base if implemented differently.

@@ -17,6 +17,7 @@ export const config = {
   // ローカル開発時は未設定の場合のみ 3100 にフォールバック
   port: parseInt(requiredEnv('PORT', '3100'), 10),
   publicUrl: requiredEnv('PUBLIC_URL'),
+  webAppUrl: requiredEnv('WEB_APP_URL'),
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),
   openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'OPENAI_REALTIME'),
   openAiSummaryModel: requiredEnv('OPENAI_MODEL_MINI', 'gpt-5-mini'),
