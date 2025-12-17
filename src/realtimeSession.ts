@@ -85,7 +85,7 @@ export class RealtimeSession {
       try {
         console.log(`🔍 Looking up profile for phone number: ${this.options.toPhoneNumber}`);
 
-        // profiles テーブルから user_id と is_subscribed を取得
+        // profiles テーブルから user_id と is_subscribed を取得する
         const { data: profile, error: profileError } = await this.supabase
           .from('profiles')
           .select('id, is_subscribed')
