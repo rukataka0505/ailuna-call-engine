@@ -140,3 +140,28 @@ REALTIME_TOOLING_RESERVATION=1
 ```
 
 
+## 11. Debug Observability Flags
+
+イベント到達を可視化して問題を診断するためのデバッグログフラグです。**プロダクション環境ではOFF推奨。**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEBUG_REALTIME_EVENTS` | OFF | OpenAI Realtime イベントをログ (audio delta除く) |
+| `DEBUG_TWILIO_MEDIA` | OFF | Twilio media イベントをログ |
+| `DEBUG_MEDIA_SAMPLES` | 5 | 詳細ログする Twilio media フレーム数 |
+| `DEBUG_REALTIME_SUMMARY_INTERVAL_MS` | 5000 | サマリログ出力間隔 (ms) |
+
+### 使用例
+
+```bash
+DEBUG_REALTIME_EVENTS=1 DEBUG_TWILIO_MEDIA=1 npm run dev
+```
+
+### 診断シナリオ
+
+- **Twilio入力が来ていない**: Summary の `mediaCount = 0`
+- **来ているがOpenAIに流していない**: `mediaCount > 0` だが `appends = 0`
+- **VADが反応していない**: `speech_started` イベントなし
+- **commitが起きていない**: `speech_stopped` はあるが `committed` がない
+- **transcriptionが動いていない**: `committed` はあるが `transcription.completed` がない
+

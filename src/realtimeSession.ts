@@ -9,6 +9,7 @@ import { writeLog } from './logging';
 import { RealtimeLogEvent } from './types';
 import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT, MODE_CLASSIFICATION_PROMPT, SLOT_EXTRACTION_PROMPT, CONFIRMATION_CHECK_PROMPT, FIELD_IDENTIFICATION_PROMPT } from './prompts';
 import { notificationService } from './notifications';
+import { DebugObserver } from './debugObserver';
 
 export interface RealtimeSessionOptions {
   streamSid: string;
@@ -36,6 +37,7 @@ export class RealtimeSession {
   private supabase: SupabaseClient;
   private openai: OpenAI;
   private stripe?: Stripe;
+  private debugObserver: DebugObserver;
 
   private readonly options: RealtimeSessionOptions;
 
@@ -71,6 +73,10 @@ export class RealtimeSession {
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
+
+    // Debug observer for event logging
+    this.debugObserver = new DebugObserver(options.streamSid);
+    this.debugObserver.startSummaryInterval();
 
     if (config.stripeSecretKey) {
       this.stripe = new Stripe(config.stripeSecretKey, {
@@ -340,6 +346,8 @@ ${fieldList}
 
   sendAudio(g711_ulaw: Buffer) {
     if (!this.connected || !this.ws) return;
+    // Track audio for debug observability
+    this.debugObserver.trackAudioSent(g711_ulaw.length);
     const payload = {
       type: 'input_audio_buffer.append',
       audio: g711_ulaw.toString('base64'),
@@ -355,6 +363,9 @@ ${fieldList}
   private async handleRealtimeEvent(raw: string) {
     try {
       const event = JSON.parse(raw);
+
+      // Debug: Log OpenAI Realtime events
+      this.debugObserver.logRealtimeEvent(event);
 
       if (event.type === 'session.updated') {
         // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
@@ -1306,6 +1317,8 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
   }
 
   close() {
+    // Stop debug observer summary interval
+    this.debugObserver.stopSummaryInterval();
     if (this.ws) {
       this.ws.close();
     }

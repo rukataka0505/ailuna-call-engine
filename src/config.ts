@@ -47,6 +47,12 @@ export const config = {
 
   // Feature Flags
   realtimeToolingReservation: optionalEnv('REALTIME_TOOLING_RESERVATION') === '1',
+
+  // Debug Observability Flags (default OFF)
+  debugRealtimeEvents: optionalEnv('DEBUG_REALTIME_EVENTS') === '1',
+  debugTwilioMedia: optionalEnv('DEBUG_TWILIO_MEDIA') === '1',
+  debugMediaSamples: parseInt(optionalEnv('DEBUG_MEDIA_SAMPLES', '5')!, 10),
+  debugRealtimeSummaryIntervalMs: parseInt(optionalEnv('DEBUG_REALTIME_SUMMARY_INTERVAL_MS', '5000')!, 10),
 };
 
 type Config = typeof config;

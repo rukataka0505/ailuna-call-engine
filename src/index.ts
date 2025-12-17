@@ -8,6 +8,7 @@ import { createLogFilePath, writeLog } from './logging';
 import { TwilioMediaMessage } from './types';
 
 import { RealtimeSession } from './realtimeSession';
+import { DebugObserver } from './debugObserver';
 
 import { middleware as lineMiddleware } from '@line/bot-sdk';
 import { handleLineWebhook } from './lineWebhook';
@@ -36,6 +37,7 @@ interface CallContext {
   logFile: string;
   realtime?: RealtimeSession;
   twilioSocket?: WebSocket;
+  debugObserver?: DebugObserver;
 }
 
 const calls = new Map<string, CallContext>();
@@ -137,12 +139,18 @@ wss.on('connection', (socket, req) => {
 
         console.log('Start event received. Custom params:', customParameters);
         const logFile = createLogFilePath();
+        const debugObserver = new DebugObserver(streamSid);
         const context: CallContext = {
           streamSid,
           logFile,
           twilioSocket: socket,
+          debugObserver,
         };
         calls.set(streamSid, context);
+
+        // Log start event for debugging
+        debugObserver.logTwilioMedia(data);
+
         await writeLog(logFile, {
           timestamp: new Date().toISOString(),
           event: 'start',
@@ -185,6 +193,10 @@ wss.on('connection', (socket, req) => {
       if (data.event === 'media' && data.media && data.streamSid) {
         const context = calls.get(data.streamSid);
         if (!context?.realtime) return;
+
+        // Log media event for debugging
+        context.debugObserver?.logTwilioMedia(data);
+
         const mulawPayload = Buffer.from(data.media.payload, 'base64');
         context.realtime.sendAudio(mulawPayload);
       }
@@ -192,6 +204,9 @@ wss.on('connection', (socket, req) => {
       if (data.event === 'stop' && data.streamSid) {
         const context = calls.get(data.streamSid);
         if (context) {
+          // Log stop event for debugging
+          context.debugObserver?.logTwilioMedia(data);
+
           await writeLog(context.logFile, {
             timestamp: new Date().toISOString(),
             event: 'stop',
