@@ -93,3 +93,25 @@ Twilio Voice Number の Webhook を以下に設定します（POST）：
 ## 8. デプロイ（例）
 - Cloud Run / Fly.io / ECS など、WebSocketを扱える環境にデプロイしてください。
 - `PUBLIC_URL` は外部公開URLに合わせます。
+
+---
+
+## 9. Reservation Logic Stability Work Memo (Phase 0)
+**Current Issues**:
+- `reservation_requests` can be double-created in a single call.
+- `answers` column is mixed (array vs object). Web UI breaks.
+- `requested_date`/`time` formats are inconsistent with DB types.
+- `call-engine` inserts non-existent `transcription` column.
+- Strict `env` checks prevent startup.
+- `claim_phone_number` RPC argument mismatch possible.
+
+### Acceptance Criteria
+- [ ] 1 call (same `call_sid`) = Max 1 `reservation_requests` record.
+- [ ] `answers` is ALWAYS an object (array prohibited).
+- [ ] `requested_date` inserted as `YYYY-MM-DD` (date type).
+- [ ] `requested_time` inserted as `HH:mm` (time type).
+- [ ] Store notifications (Email/LINE) sent exactly once.
+- [ ] `transcription` column removed from insert payload.
+- [ ] `sms_body_sent` and `sms_sent_at` are properly recorded on approval/rejection.
+- [ ] Environment variable validation allows flexible startup.
+

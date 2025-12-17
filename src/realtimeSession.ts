@@ -35,7 +35,7 @@ export class RealtimeSession {
   private ws?: WebSocket;
   private supabase: SupabaseClient;
   private openai: OpenAI;
-  private stripe: Stripe;
+  private stripe?: Stripe;
 
   private readonly options: RealtimeSessionOptions;
 
@@ -56,6 +56,7 @@ export class RealtimeSession {
     currentFieldKey: null,
     filled: {}
   };
+  private reservationCreated = false; // Prevent duplicate reservations
 
   private userId?: string;
   private callerNumber?: string;
@@ -68,9 +69,13 @@ export class RealtimeSession {
     this.callerNumber = options.fromPhoneNumber;
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
-    this.stripe = new Stripe(config.stripeSecretKey, {
-      apiVersion: '2025-02-24.acacia',
-    });
+    this.openai = new OpenAI({ apiKey: config.openAiApiKey });
+
+    if (config.stripeSecretKey) {
+      this.stripe = new Stripe(config.stripeSecretKey, {
+        apiVersion: '2025-02-24.acacia',
+      });
+    }
   }
 
   private async loadSystemPrompt(): Promise<void> {
@@ -241,9 +246,14 @@ ${fieldList}
         this.handleRealtimeEvent(data.toString());
       });
 
-      ws.on('close', () => {
+      ws.on('close', async () => {
         this.connected = false;
         console.log('🤖 OpenAI Realtime session closed');
+
+        // Refined Phase 1: Insert Reservation on Close if Done
+        if (this.reservationState.stage === 'done') {
+          await this.createReservationRequest();
+        }
       });
 
       ws.on('error', (err: Error) => {
@@ -528,7 +538,9 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
 
         if (check.result === 'yes') {
           this.reservationState.stage = 'done';
-          await this.createReservationRequest(); // Phase 10: Save to DB
+
+          // Refined Phase 1: Removed direct insert. Set stage only.
+          // await this.createReservationRequest(); 
           this.sendJson({
             type: 'response.create',
             response: {
@@ -623,9 +635,16 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
     }
   }
 
-  // Phase 10: Create Reservation Request
+  // Phase 10: Create Reservation Request (Idempotent)
   private async createReservationRequest() {
     if (!this.userId) return;
+
+    // Idempotency Check (In-Memory)
+    if (this.reservationCreated) {
+      console.warn('⚠️ Reservation already created for this session. Skipping duplicate.');
+      return;
+    }
+    this.reservationCreated = true;
 
     console.log('📝 Creating Reservation Request from State Machine...');
     const filled = this.reservationState.filled;
@@ -644,54 +663,121 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
     const customerName = findValue('name', '名前');
     const partySizeStr = findValue('count', 'party', '人数');
     const partySize = partySizeStr ? parseInt(partySizeStr.replace(/[^0-9]/g, ''), 10) : null;
-    // For date/time, we might have separate fields or one.
-    // Ideally we should have structured them better, but for now we store what we have.
+
+    // Date/Time Parsing
     const dateStr = findValue('date', 'time', '日時');
-    const requestedDate = !isNaN(Date.parse(dateStr || '')) ? new Date(dateStr!).toISOString() : null;
+    let requestedDate: string | null = null;
+    let requestedTime: string | null = null;
 
-    // We put EVERYTHING into answers for completeness
-    const answers = this.reservationFields.map(f => ({
-      field_key: f.field_key,
-      field_label: f.label,
-      answer: filled[f.field_key] || ''
-    }));
-
-    // Construct answer record for notification type (Simple Key-Value)
-    const answersRecord: Record<string, any> = {};
-    for (const f of this.reservationFields) {
-      answersRecord[f.label] = filled[f.field_key] || '';
+    if (dateStr) {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) {
+        // ISO string is YYYY-MM-DDTHH:mm:ss.sssZ
+        // We want YYYY-MM-DD and HH:mm
+        const iso = d.toISOString();
+        requestedDate = iso.split('T')[0];
+        requestedTime = iso.split('T')[1].substring(0, 5);
+      } else {
+        console.warn(`⚠️ Could not parse dateStr: ${dateStr}`);
+      }
     }
 
+    // Prepare answers for DB (key: field_key) and Notification (key: label)
+    const dbAnswers: Record<string, any> = {};
+    const notificationAnswers: Record<string, any> = {};
+
+    for (const f of this.reservationFields) {
+      const val = filled[f.field_key] || '';
+      // DB: store with field_key
+      dbAnswers[f.field_key] = val;
+      // Notification: store with label (readable)
+      notificationAnswers[f.label] = val;
+    }
+
+    const callSid = this.options.callSid;
+
     try {
+      // 1. Check existence by call_sid
+      const { data: existing } = await this.supabase
+        .from('reservation_requests')
+        .select('id')
+        .eq('call_sid', callSid)
+        .single();
+
+      if (existing) {
+        console.log(`🔄 Reservation already exists for call_sid=${callSid}. Updating...`);
+        // UPDATE (No Notification, preserve status)
+        const { error: updateError } = await this.supabase
+          .from('reservation_requests')
+          .update({
+            customer_name: customerName || 'Unknown',
+            requested_date: requestedDate,
+            requested_time: requestedTime,
+            party_size: partySize,
+            answers: dbAnswers, // DB Schema Compliance: field_key
+            // Do NOT update status, sms_body_sent, sms_sent_at
+          })
+          .eq('id', existing.id);
+
+        if (updateError) {
+          console.error('❌ Failed to update existing reservation:', updateError);
+        } else {
+          console.log('✅ Reservation updated successfully.');
+        }
+        return; // Exit after update
+      }
+
+      // 2. INSERT (if not found)
       const { data, error } = await this.supabase
         .from('reservation_requests')
         .insert({
           user_id: this.userId,
+          call_sid: callSid,
           customer_phone: this.callerNumber || 'Unknown',
           customer_name: customerName || 'Unknown',
-          requested_date: requestedDate,
+          requested_date: requestedDate, // YYYY-MM-DD
+          requested_time: requestedTime, // HH:mm
           party_size: partySize,
           status: 'pending',
-          answers: answers, // JSONB
-          transcription: this.formatTranscriptForSummary(), // Backup
+          answers: dbAnswers, // DB Schema Compliance: field_key
+          // transcription column removed
         })
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        // Handle Unique Violation (Race Condition)
+        if (error.code === '23505') {
+          console.warn('⚠️ Unique constraint violation (race condition). Falling back to update.');
+          const { error: retryUpdateError } = await this.supabase
+            .from('reservation_requests')
+            .update({
+              customer_name: customerName || 'Unknown',
+              requested_date: requestedDate,
+              requested_time: requestedTime,
+              party_size: partySize,
+              answers: dbAnswers, // DB Schema Compliance: field_key
+            })
+            .eq('call_sid', callSid);
+
+          if (retryUpdateError) console.error('❌ Failed to update on fallback:', retryUpdateError);
+          return;
+        }
+        throw error;
+      }
 
       console.log('✅ Reservation Request Created:', data.id);
 
-      // Send Notifications
+      // Send Notifications (ONLY on fresh insert)
       await notificationService.notifyReservation({
         user_id: this.userId,
         customer_name: customerName || 'Unknown',
         customer_phone: this.callerNumber || 'Unknown',
         party_size: partySize,
-        requested_date: requestedDate ? requestedDate.split('T')[0] : dateStr,
-        requested_time: requestedDate ? requestedDate.split('T')[1]?.substring(0, 5) : null,
+        requested_date: requestedDate,
+        requested_time: requestedTime,
         requested_datetime_text: dateStr,
-        answers: answersRecord
+        answers: notificationAnswers
       });
 
     } catch (err) {
@@ -749,6 +835,11 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
       const stripeCustomerId = profile.stripe_customer_id;
       console.log(`🔍 Found Stripe customer ID: ${stripeCustomerId}`);
 
+      if (!this.stripe) {
+        console.warn('⚠️ Stripe is not initialized (STRIPE_SECRET_KEY missing). Skipping usage report.');
+        return;
+      }
+
       // 2. Find active subscription with the usage price
       const subscriptions = await this.stripe.subscriptions.list({
         customer: stripeCustomerId,
@@ -784,6 +875,8 @@ Already Filled: ${JSON.stringify(this.reservationState.filled)}
       // 4. Calculate usage quantity (convert seconds to minutes, round up)
       const durationMinutes = Math.ceil(durationSeconds / 60);
       console.log(`⏱️ Call duration: ${durationSeconds}s → ${durationMinutes} minutes (rounded up)`);
+
+      if (!this.stripe) return; // Should be covered by early return, but safe for TS
 
       // 5. Create usage record
       const usageRecord = await this.stripe.subscriptionItems.createUsageRecord(
