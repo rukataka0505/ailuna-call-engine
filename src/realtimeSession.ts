@@ -317,6 +317,9 @@ ${fieldMapping}
     this.sendJson(payload);
     // NDJSON: Log session update sent
     this.logEvent({ event: 'session_update_sent' });
+    // Debug: Log system prompt length for troubleshooting
+    console.log(`📝 [Debug] System prompt length: ${this.currentSystemPrompt.length} chars`);
+    console.log(`📝 [Debug] Tools configured: finalize_reservation (tool_choice: auto)`);
 
     // B対策: Start 3s timeout for session.updated ACK
     this.sessionUpdateTimeout = setTimeout(() => {
@@ -448,6 +451,12 @@ ${fieldMapping}
 
         // Function Call Detection
         const functionCalls = output.filter((item: any) => item.type === 'function_call');
+        console.log(`🔍 [Debug] response.done output items: ${output.length}, function_calls: ${functionCalls.length}`);
+        if (output.length > 0 && functionCalls.length === 0) {
+          // Log output types for debugging
+          const types = output.map((item: any) => item.type).join(', ');
+          console.log(`🔍 [Debug] Output types: ${types}`);
+        }
         for (const fc of functionCalls) {
           if (fc.name === 'finalize_reservation') {
             console.log(`🔧 Function call detected: ${fc.name} (call_id: ${fc.call_id})`);
@@ -1023,15 +1032,18 @@ ${fieldMapping}
    * Link call_log_id to existing reservation (if any was created via finalize_reservation tool)
    */
   private async linkCallLogToReservation(callLogId: string) {
-    const { error } = await this.supabase
+    const { data, error, count } = await this.supabase
       .from('reservation_requests')
       .update({ call_log_id: callLogId })
-      .eq('call_sid', this.options.callSid);
+      .eq('call_sid', this.options.callSid)
+      .select();
 
     if (error) {
       console.warn('⚠️ Failed to link call_log_id to reservation:', error.message);
+    } else if (data && data.length > 0) {
+      console.log('🔗 Linked call_log_id to reservation (ID:', data[0].id, ')');
     } else {
-      console.log('🔗 Linked call_log_id to reservation');
+      console.log('ℹ️ No existing reservation found for call_sid:', this.options.callSid);
     }
   }
 
