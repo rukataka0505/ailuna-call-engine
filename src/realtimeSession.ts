@@ -205,7 +205,7 @@ ${fieldMapping}
 【finalize_reservation ツールの使い方（重要）】
 - 必須項目（customer_name / party_size / requested_date / requested_time）および上記のヒアリング項目の必須項目が全て揃ったら、
   すぐにツールは呼ばず、必ず「口頭で復唱確認」を行ってください。
-
+- 予約日時を復唱確認する際、「明日」「来週金曜」などは現在日時から計算して正確な日付に変換し、確認してください。
 【口頭確認テンプレ（この文言を必ず含める）】
 「ご予約内容を復唱します。お名前：{customer_name}、人数：{party_size}名、日時：{requested_date} {requested_time}、（任意項目があれば続ける）
 以上でお間違いないでしょうか？ よろしければ『はい』、修正があれば『いいえ』とお答えください。」
