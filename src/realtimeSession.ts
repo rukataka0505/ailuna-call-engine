@@ -43,6 +43,7 @@ export class RealtimeSession {
 
   private connected = false;
   private isUserSpeaking = false;
+  private isResponseActive = false; // Track if OpenAI response is active for smart cancel
   private turnCount = 0;
 
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
@@ -60,12 +61,23 @@ export class RealtimeSession {
   private transcript: { role: string; text: string; timestamp: string }[] = [];
   private startTime: number;
 
+  // Timing measurements for Phase 0 observability
+  private timings = {
+    callStart: 0,
+    sessionUpdated: 0,
+    firstAudioDelta: 0,
+    firstMessage: 0,
+    reservationCalled: 0,
+    reservationDbDone: 0,
+    reservationOutputSent: 0,
+  };
+
   constructor(options: RealtimeSessionOptions) {
     this.startTime = Date.now();
+    this.timings.callStart = this.startTime;
     this.options = options;
     this.callerNumber = options.fromPhoneNumber;
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
-    this.openai = new OpenAI({ apiKey: config.openAiApiKey });
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
 
     // Debug observer for event logging
@@ -350,6 +362,21 @@ ${fieldMapping}
   }
 
   /**
+   * Send base64-encoded G.711 µ-law audio directly to OpenAI.
+   * Avoids decode/encode overhead by passing through as-is.
+   */
+  sendAudioBase64(base64Mulaw: string) {
+    if (!this.connected || !this.ws) return;
+    // Track audio for debug observability (compute byte length from base64)
+    this.debugObserver.trackAudioSent(Buffer.byteLength(base64Mulaw, 'base64'));
+    const payload = {
+      type: 'input_audio_buffer.append',
+      audio: base64Mulaw,
+    };
+    this.sendJson(payload);
+  }
+
+  /**
    * Track Twilio media event and log to NDJSON (sampled every 100 frames).
    * Called from index.ts when media event is received.
    */
@@ -386,9 +413,12 @@ ${fieldMapping}
           event_id: event.event_id,
         };
 
-        // Downgrade known benign errors to warn level
+        // Downgrade known benign errors to debug level
         if (errorCode === 'response_cancel_not_active') {
-          console.warn('⚠️ [OpenAI Realtime] Cancel attempted with no active response', errorDetails);
+          // Benign error - only log in debug mode to reduce noise
+          if (config.debugRealtimeEvents) {
+            console.debug('ℹ️ [OpenAI Realtime] Cancel with no active response (benign)', errorDetails);
+          }
         } else {
           console.error('❌ [OpenAI Realtime Error]', errorDetails);
         }
@@ -402,6 +432,10 @@ ${fieldMapping}
 
       if (event.type === 'session.updated') {
         console.log('✅ [Session] session.update confirmed by API');
+        // Timing: Record session.updated
+        if (!this.timings.sessionUpdated) {
+          this.timings.sessionUpdated = Date.now();
+        }
         // B対策: Clear timeout on successful ACK
         if (this.sessionUpdateTimeout) {
           clearTimeout(this.sessionUpdateTimeout);
@@ -424,6 +458,11 @@ ${fieldMapping}
         }
       }
 
+      // Track response lifecycle for smart cancel
+      if (event.type === 'response.created') {
+        this.isResponseActive = true;
+      }
+
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
         // ユーザー発話中は音声を送らない
         if (this.isUserSpeaking) {
@@ -432,6 +471,10 @@ ${fieldMapping}
 
         const base64Mulaw = event.delta ?? event.audio?.data;
         if (base64Mulaw) {
+          // Timing: Record first audio delta
+          if (!this.timings.firstAudioDelta) {
+            this.timings.firstAudioDelta = Date.now();
+          }
           this.forwardAudioToTwilioFromBase64(base64Mulaw);
           // NDJSON: Log audio_delta (sampled every 100 frames)
           this.audioDeltaCount++;
@@ -454,6 +497,10 @@ ${fieldMapping}
         const text = textParts.join(' ');
 
         if (text) {
+          // Timing: Record first message
+          if (!this.timings.firstMessage) {
+            this.timings.firstMessage = Date.now();
+          }
           this.turnCount++;
           this.logEvent({
             event: 'assistant_response',
@@ -479,6 +526,9 @@ ${fieldMapping}
             await this.handleFinalizeReservation(fc.call_id, fc.arguments);
           }
         }
+
+        // Mark response as complete
+        this.isResponseActive = false;
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
@@ -487,7 +537,11 @@ ${fieldMapping}
         // NDJSON: Log VAD speech started
         this.logEvent({ event: 'vad_event', action: 'start' });
         this.options.onClearTwilio(); // Twilioのバッファをクリア
-        this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
+        // Smart cancel: Only send if response is active (or if feature flag disabled)
+        if (!config.enableSmartCancel || this.isResponseActive) {
+          this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
+          this.isResponseActive = false;
+        }
 
         // D対策: Start 5s failsafe timer for isUserSpeaking
         if (this.speakingTimeout) {
@@ -546,6 +600,8 @@ ${fieldMapping}
    */
   private async handleFinalizeReservation(callId: string, argsJson: string) {
     console.log('🔧 finalize_reservation called with:', argsJson);
+    // Timing: Record reservation called
+    this.timings.reservationCalled = Date.now();
 
     let result: { ok: boolean; message?: string; missing_fields?: string[] };
 
@@ -586,6 +642,8 @@ ${fieldMapping}
       } else {
         // 2. DB Insert (with conflict handling)
         const insertResult = await this.insertReservationFromTool(args);
+        // Timing: Record DB done
+        this.timings.reservationDbDone = Date.now();
         result = insertResult;
       }
     } catch (err) {
@@ -619,6 +677,8 @@ ${fieldMapping}
     });
     // NDJSON: Log response.create sent (after tool call)
     this.logEvent({ event: 'response_create_sent', trigger: 'tool' });
+    // Timing: Record output sent
+    this.timings.reservationOutputSent = Date.now();
 
     console.log('📤 function_call_output sent, conversation continues');
   }
@@ -1073,9 +1133,35 @@ ${fieldMapping}
   close() {
     // Stop debug observer summary interval
     this.debugObserver.stopSummaryInterval();
+
+    // Log timing summary if DEBUG_TIMING is enabled
+    this.logTimingSummary();
+
     if (this.ws) {
       this.ws.close();
     }
     this.saveCallLogToSupabase();
+  }
+
+  /**
+   * Log timing summary for performance monitoring.
+   */
+  private logTimingSummary() {
+    const t = this.timings;
+    const summary = {
+      toSessionUpdated: t.sessionUpdated ? t.sessionUpdated - t.callStart : null,
+      toFirstAudio: t.firstAudioDelta ? t.firstAudioDelta - t.callStart : null,
+      toFirstMessage: t.firstMessage ? t.firstMessage - t.callStart : null,
+      reservationDbMs: t.reservationDbDone && t.reservationCalled ? t.reservationDbDone - t.reservationCalled : null,
+      reservationOutputMs: t.reservationOutputSent && t.reservationCalled ? t.reservationOutputSent - t.reservationCalled : null,
+    };
+
+    // Always log to NDJSON for analysis
+    this.logEvent({ event: 'timing_summary', ...summary });
+
+    // Console log only if DEBUG_TIMING is enabled
+    if (config.debugTiming) {
+      console.log('⏱️ [Timing Summary]', summary);
+    }
   }
 }

@@ -197,10 +197,18 @@ wss.on('connection', (socket, req) => {
         // Log media event for debugging
         context.debugObserver?.logTwilioMedia(data);
 
-        const mulawPayload = Buffer.from(data.media.payload, 'base64');
-        // NDJSON: Track twilio_media (sampled)
-        context.realtime.trackTwilioMedia(mulawPayload.length);
-        context.realtime.sendAudio(mulawPayload);
+        // Feature flag: Use base64 pass-through (or fallback to Buffer decode)
+        if (config.enableBase64Passthrough) {
+          const payloadBase64 = data.media.payload;
+          const payloadBytes = Buffer.byteLength(payloadBase64, 'base64');
+          context.realtime.trackTwilioMedia(payloadBytes);
+          context.realtime.sendAudioBase64(payloadBase64);
+        } else {
+          // Rollback path: decode base64 to Buffer
+          const mulawPayload = Buffer.from(data.media.payload, 'base64');
+          context.realtime.trackTwilioMedia(mulawPayload.length);
+          context.realtime.sendAudio(mulawPayload);
+        }
       }
 
       if (data.event === 'stop' && data.streamSid) {

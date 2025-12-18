@@ -51,6 +51,11 @@ export const config = {
   debugTwilioMedia: optionalEnv('DEBUG_TWILIO_MEDIA') === '1',
   debugMediaSamples: parseInt(optionalEnv('DEBUG_MEDIA_SAMPLES', '5')!, 10),
   debugRealtimeSummaryIntervalMs: parseInt(optionalEnv('DEBUG_REALTIME_SUMMARY_INTERVAL_MS', '5000')!, 10),
+  debugTiming: optionalEnv('DEBUG_TIMING') === '1',
+
+  // Feature Flags (Rollback Switches) - default ON
+  enableBase64Passthrough: optionalEnv('ENABLE_BASE64_PASSTHROUGH', '1') === '1',
+  enableSmartCancel: optionalEnv('ENABLE_SMART_CANCEL', '1') === '1',
 };
 
 type Config = typeof config;
