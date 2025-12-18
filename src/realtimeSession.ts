@@ -684,8 +684,13 @@ ${fieldMapping}
       });
 
       return { ok: true, message: '予約を受け付けました' };
-    } catch (dbErr) {
-      console.error('❌ DB error in insertReservationFromTool:', dbErr);
+    } catch (dbErr: any) {
+      console.error('❌ DB error in insertReservationFromTool:', {
+        code: dbErr?.code,
+        message: dbErr?.message,
+        details: dbErr?.details,
+        hint: dbErr?.hint,
+      });
       return { ok: false, message: 'データベースエラーが発生しました' };
     }
   }
