@@ -25,6 +25,7 @@ export interface RealtimeSessionOptions {
   toPhoneNumber?: string;
   fromPhoneNumber?: string;
   userId?: string;
+  debugObserver: DebugObserver;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
 }
@@ -82,8 +83,8 @@ export class RealtimeSession {
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
 
-    // Debug observer for event logging
-    this.debugObserver = new DebugObserver(options.streamSid);
+    // Use shared debug observer from index.ts
+    this.debugObserver = options.debugObserver;
     this.debugObserver.startSummaryInterval();
 
     if (config.stripeSecretKey) {
@@ -336,7 +337,7 @@ ${fieldMapping}
           type: 'server_vad',
           threshold: 0.6,
           prefix_padding_ms: 300,
-          silence_duration_ms: 800,
+          silence_duration_ms: config.vadSilenceDurationMs,
           create_response: true, // Always auto-respond via VAD
           interrupt_response: true,
         },

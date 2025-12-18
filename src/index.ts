@@ -169,6 +169,7 @@ wss.on('connection', (socket, req) => {
           toPhoneNumber,
           fromPhoneNumber,
           userId,
+          debugObserver,
           onAudioToTwilio: (base64Mulaw) => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(

@@ -56,6 +56,9 @@ export const config = {
   // Feature Flags (Rollback Switches) - default ON
   enableBase64Passthrough: optionalEnv('ENABLE_BASE64_PASSTHROUGH', '1') === '1',
   enableSmartCancel: optionalEnv('ENABLE_SMART_CANCEL', '1') === '1',
+
+  // VAD tuning (lower = faster response, but more interruptions)
+  vadSilenceDurationMs: parseInt(optionalEnv('VAD_SILENCE_DURATION_MS', '500')!, 10),
 };
 
 type Config = typeof config;
