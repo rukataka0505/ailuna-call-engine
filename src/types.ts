@@ -27,6 +27,8 @@ export interface RealtimeLogEvent {
   | 'session_update_sent' | 'session_updated_received' | 'response_create_sent'
   // Diagnostic events
   | 'twilio_media' | 'vad_event' | 'audio_delta'
+  // Safeguard events
+  | 'session_update_timeout' | 'speaking_failsafe'
   | string;
   role?: 'user' | 'assistant' | 'system';
   text?: string;

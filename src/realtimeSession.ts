@@ -45,6 +45,8 @@ export class RealtimeSession {
   private reservationCreated = false; // Prevent duplicate reservations
   private audioDeltaCount = 0; // Counter for audio_delta sampling
   private mediaCount = 0; // Counter for twilio_media sampling
+  private sessionUpdateTimeout?: ReturnType<typeof setTimeout>; // B対策: session.update ACK timeout
+  private speakingTimeout?: ReturnType<typeof setTimeout>; // D対策: isUserSpeaking failsafe
 
   private userId?: string;
   private callerNumber?: string;
@@ -315,6 +317,15 @@ ${fieldMapping}
     this.sendJson(payload);
     // NDJSON: Log session update sent
     this.logEvent({ event: 'session_update_sent' });
+
+    // B対策: Start 3s timeout for session.updated ACK
+    this.sessionUpdateTimeout = setTimeout(() => {
+      console.error('⚠️ [Timeout] session.updated not received within 3s');
+      this.logEvent({
+        event: 'session_update_timeout',
+        error_message: 'session.updated not received within 3000ms'
+      });
+    }, 3000);
   }
 
   sendAudio(g711_ulaw: Buffer) {
@@ -372,6 +383,11 @@ ${fieldMapping}
 
       if (event.type === 'session.updated') {
         console.log('✅ [Session] session.update confirmed by API');
+        // B対策: Clear timeout on successful ACK
+        if (this.sessionUpdateTimeout) {
+          clearTimeout(this.sessionUpdateTimeout);
+          this.sessionUpdateTimeout = undefined;
+        }
         // NDJSON: Log session updated received
         this.logEvent({ event: 'session_updated_received' });
         // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
@@ -447,10 +463,30 @@ ${fieldMapping}
         this.logEvent({ event: 'vad_event', action: 'start' });
         this.options.onClearTwilio(); // Twilioのバッファをクリア
         this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
+
+        // D対策: Start 5s failsafe timer for isUserSpeaking
+        if (this.speakingTimeout) {
+          clearTimeout(this.speakingTimeout);
+        }
+        this.speakingTimeout = setTimeout(() => {
+          if (this.isUserSpeaking) {
+            console.warn('⚠️ [Failsafe] isUserSpeaking stuck for 5s, force resetting');
+            this.isUserSpeaking = false;
+            this.logEvent({
+              event: 'speaking_failsafe',
+              error_message: 'isUserSpeaking stuck for 5000ms, force reset'
+            });
+          }
+        }, 5000);
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
         this.isUserSpeaking = false;
+        // D対策: Clear speakingTimeout on normal stop
+        if (this.speakingTimeout) {
+          clearTimeout(this.speakingTimeout);
+          this.speakingTimeout = undefined;
+        }
         // NDJSON: Log VAD speech stopped
         this.logEvent({ event: 'vad_event', action: 'stop' });
       }
