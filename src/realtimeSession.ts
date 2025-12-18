@@ -45,8 +45,6 @@ export class RealtimeSession {
   private readonly options: RealtimeSessionOptions;
 
   private connected = false;
-  private isUserSpeaking = false;
-  private isResponseActive = false; // Track if OpenAI response is active for smart cancel
   private turnCount = 0;
 
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
@@ -57,7 +55,6 @@ export class RealtimeSession {
   private audioDeltaCount = 0; // Counter for audio_delta sampling
   private mediaCount = 0; // Counter for twilio_media sampling
   private sessionUpdateTimeout?: ReturnType<typeof setTimeout>; // B対策: session.update ACK timeout
-  private speakingTimeout?: ReturnType<typeof setTimeout>; // D対策: isUserSpeaking failsafe
 
   private userId?: string;
   private callerNumber?: string;
@@ -216,17 +213,29 @@ ${fieldMapping}
 - 必須項目（customer_name / party_size / requested_date / requested_time）および上記のヒアリング項目の必須項目が全て揃ったら、
   すぐにツールは呼ばず、必ず「口頭で復唱確認」を行ってください。
 - 予約日時を復唱確認する際、「明日」「来週金曜」などは現在日時から計算して正確な日付に変換し、確認してください。
+
 【口頭確認テンプレ（この文言を必ず含める）】
 「ご予約内容を復唱します。お名前：{customer_name}、人数：{party_size}名、日時：{requested_date} {requested_time}、（任意項目があれば続ける）
 以上でお間違いないでしょうか？ よろしければ『はい』、修正があれば『いいえ』とお答えください。」
 
-- ユーザーが『はい』『それでお願いします』など明確に了承した場合にのみ、
-  finalize_reservation を confirmed:true を付けて呼び出してください。
+【発話シーケンス（厳守）】
+1. ユーザーが『はい』『それでお願いします』など明確に了承した直後：
+   → まず「ではこの内容でご予約を送信します。少々お待ちください。」と発話
+   → その直後に finalize_reservation を confirmed:true で呼び出す
+
+2. ツール成功（ok:true）後：
+   → 「受付しました。予約の成否は後ほどSMSでお送りしますので、ご確認ください。」と発話
+
+3. ツール失敗（ok:false）後：
+   → 「申し訳ありません。送信に失敗しました。もう一度、確認からやり直します。」と発話
+   → 再度、復唱確認から仕切り直してください。
+
 - ユーザーが『いいえ』『違う』など否定した場合は、どこを修正するか聞き直して、再度この口頭確認を行ってください。
 
 【禁止事項】
 - finalize_reservation が ok:true を返すまで、「予約受付が完了しました」「承りました」等の確定表現は禁止。
 - 必須項目が揃っていない／ツール未実行の段階で会話を打ち切る発話（終了・お礼で締める等）をしない。
+- ツール呼び出し前に「送信します」以外の確定的な表現を使わない。
 
 【日付・時間の形式】
 - requested_date: YYYY-MM-DD（例：2025-12-20）
@@ -341,9 +350,10 @@ ${fieldMapping}
             party_size: { type: 'integer', description: '予約人数（正の整数）' },
             requested_date: { type: 'string', description: '予約日（YYYY-MM-DD形式）' },
             requested_time: { type: 'string', description: '予約時間（HH:mm形式）' },
-            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' }
+            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' },
+            confirmed: { type: 'boolean', description: 'ユーザーが口頭で「はい」と明確に了承した場合のみ true' }
           },
-          required: ['customer_name', 'party_size', 'requested_date', 'requested_time']
+          required: ['customer_name', 'party_size', 'requested_date', 'requested_time', 'confirmed']
         }
       }],
       tool_choice: 'auto'
@@ -504,10 +514,7 @@ ${fieldMapping}
         }
       }
 
-      // Track response lifecycle for smart cancel
-      if (event.type === 'response.created') {
-        this.isResponseActive = true;
-      }
+      // response.created is tracked for logging purposes only (smart cancel removed)
 
       // Capture assistant item_id for playback tracking (truncate preparation)
       if (event.type === 'response.output_item.added') {
@@ -516,18 +523,18 @@ ${fieldMapping}
           this.currentAssistantItemId = item.id;
           // Reset playback tracker for new assistant message
           this.sentMsTotal = 0;
+          this.playedMsTotal = 0;
           this.lastMarkSentMs = 0;
           this.markSeq = 0;
           this.markMap.clear();
+          // Clear the clearing state when new assistant response starts
+          this.clearing = false;
           console.log(`🎯 [PlaybackTracker] New assistant item: ${item.id}`);
         }
       }
 
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
-        // ユーザー発話中は音声を送らない
-        if (this.isUserSpeaking) {
-          return;
-        }
+        // Note: Audio is always forwarded to Twilio. Barge-in is handled via clear + truncate.
 
         const base64Mulaw = event.delta ?? event.audio?.data;
         if (base64Mulaw) {
@@ -601,45 +608,35 @@ ${fieldMapping}
           }
         }
 
-        // Mark response as complete
-        this.isResponseActive = false;
+        // Response lifecycle logging (smart cancel removed)
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        console.log('🎙️ ユーザー発話開始 (Barge-in)');
-        this.isUserSpeaking = true;
+        console.log('�️ ユーザー発話開始 (Barge-in)');
         // NDJSON: Log VAD speech started
         this.logEvent({ event: 'vad_event', action: 'start' });
-        this.options.onClearTwilio(); // Twilioのバッファをクリア
-        // Smart cancel: Only send if response is active (or if feature flag disabled)
-        if (!config.enableSmartCancel || this.isResponseActive) {
-          this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
-          this.isResponseActive = false;
-        }
 
-        // D対策: Start 5s failsafe timer for isUserSpeaking
-        if (this.speakingTimeout) {
-          clearTimeout(this.speakingTimeout);
+        // Set clearing state BEFORE sending clear to Twilio
+        // This prevents mark events during clearing from updating playedMsTotal
+        this.clearing = true;
+
+        // Clear Twilio's audio buffer immediately
+        this.options.onClearTwilio();
+
+        // Send truncate to OpenAI if we have an active assistant response
+        if (this.currentAssistantItemId) {
+          const endMs = this.playedMsTotal;
+          console.log(`✂️ [Truncate] item_id: ${this.currentAssistantItemId}, audio_end_ms: ${endMs}`);
+          this.sendJson({
+            type: 'conversation.item.truncate',
+            item_id: this.currentAssistantItemId,
+            content_index: 0,
+            audio_end_ms: endMs
+          });
         }
-        this.speakingTimeout = setTimeout(() => {
-          if (this.isUserSpeaking) {
-            console.warn('⚠️ [Failsafe] isUserSpeaking stuck for 5s, force resetting');
-            this.isUserSpeaking = false;
-            this.logEvent({
-              event: 'speaking_failsafe',
-              error_message: 'isUserSpeaking stuck for 5000ms, force reset'
-            });
-          }
-        }, 5000);
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
-        this.isUserSpeaking = false;
-        // D対策: Clear speakingTimeout on normal stop
-        if (this.speakingTimeout) {
-          clearTimeout(this.speakingTimeout);
-          this.speakingTimeout = undefined;
-        }
         // NDJSON: Log VAD speech stopped
         this.logEvent({ event: 'vad_event', action: 'stop' });
       }
@@ -1202,7 +1199,9 @@ ${fieldMapping}
    */
   onTwilioMark(name?: string): void {
     if (!name) {
-      console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      if (config.debugMarkEvents) {
+        console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      }
       return;
     }
 
@@ -1211,14 +1210,20 @@ ${fieldMapping}
       // Only update playedMsTotal if not in clearing state (Phase3: truncate handling)
       if (!this.clearing) {
         this.playedMsTotal = Math.max(this.playedMsTotal, markInfo.endMs);
-        console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        }
       } else {
-        console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        }
       }
       // Clean up processed mark
       this.markMap.delete(name);
     } else {
-      console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      if (config.debugMarkEvents) {
+        console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      }
     }
   }
 

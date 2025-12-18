@@ -52,6 +52,7 @@ export const config = {
   debugMediaSamples: parseInt(optionalEnv('DEBUG_MEDIA_SAMPLES', '5')!, 10),
   debugRealtimeSummaryIntervalMs: parseInt(optionalEnv('DEBUG_REALTIME_SUMMARY_INTERVAL_MS', '5000')!, 10),
   debugTiming: optionalEnv('DEBUG_TIMING') === '1',
+  debugMarkEvents: optionalEnv('DEBUG_MARK_EVENTS') === '1',
 
   // Feature Flags (Rollback Switches) - default ON
   enableBase64Passthrough: optionalEnv('ENABLE_BASE64_PASSTHROUGH', '1') === '1',
