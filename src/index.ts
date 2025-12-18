@@ -191,6 +191,17 @@ wss.on('connection', (socket, req) => {
               );
             }
           },
+          onMarkToTwilio: (name) => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(
+                JSON.stringify({
+                  event: 'mark',
+                  streamSid,
+                  mark: { name },
+                }),
+              );
+            }
+          },
         });
         context.realtime = realtime;
         await realtime.connect();
@@ -214,6 +225,16 @@ wss.on('connection', (socket, req) => {
           const mulawPayload = Buffer.from(data.media.payload, 'base64');
           context.realtime.trackTwilioMedia(mulawPayload.length);
           context.realtime.sendAudio(mulawPayload);
+        }
+      }
+
+      if (data.event === 'mark' && data.streamSid) {
+        const context = calls.get(data.streamSid);
+        if (context) {
+          // Log mark event for debugging
+          context.debugObserver?.logTwilioMedia(data);
+          // Notify RealtimeSession of the mark event
+          context.realtime?.onTwilioMark(data.mark?.name);
         }
       }
 

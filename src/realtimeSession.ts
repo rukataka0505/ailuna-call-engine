@@ -28,6 +28,7 @@ export interface RealtimeSessionOptions {
   debugObserver: DebugObserver;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
+  onMarkToTwilio: (name: string) => void;
 }
 
 /**
@@ -73,6 +74,15 @@ export class RealtimeSession {
     reservationDbDone: 0,
     reservationOutputSent: 0,
   };
+
+  // PlaybackTracker state for audio position tracking
+  private currentAssistantItemId?: string;
+  private sentMsTotal = 0;
+  private playedMsTotal = 0;
+  private markMap = new Map<string, { endMs: number }>();
+  private markSeq = 0;
+  private lastMarkSentMs = 0; // Track when last mark was sent
+  private clearing = false; // Phase3: for truncate handling
 
   constructor(options: RealtimeSessionOptions) {
     this.startTime = Date.now();
@@ -490,6 +500,20 @@ ${fieldMapping}
         this.isResponseActive = true;
       }
 
+      // Capture assistant item_id for playback tracking (truncate preparation)
+      if (event.type === 'response.output_item.added') {
+        const item = event.item;
+        if (item?.type === 'message' && item?.role === 'assistant') {
+          this.currentAssistantItemId = item.id;
+          // Reset playback tracker for new assistant message
+          this.sentMsTotal = 0;
+          this.lastMarkSentMs = 0;
+          this.markSeq = 0;
+          this.markMap.clear();
+          console.log(`🎯 [PlaybackTracker] New assistant item: ${item.id}`);
+        }
+      }
+
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
         // ユーザー発話中は音声を送らない
         if (this.isUserSpeaking) {
@@ -503,10 +527,24 @@ ${fieldMapping}
             this.timings.firstAudioDelta = Date.now();
           }
           this.forwardAudioToTwilioFromBase64(base64Mulaw);
+
+          // PlaybackTracker: Calculate deltaMs from audio bytes (mulaw 8kHz = 8 bytes/ms)
+          const bytes = Buffer.from(base64Mulaw, 'base64').length;
+          const deltaMs = Math.round((bytes * 1000) / 8000);
+          this.sentMsTotal += deltaMs;
+
+          // Send mark every 300ms for playback position tracking
+          if (this.currentAssistantItemId && (this.sentMsTotal - this.lastMarkSentMs) >= 300) {
+            this.markSeq++;
+            const markName = `a:${this.currentAssistantItemId}:ms:${this.sentMsTotal}:seq:${this.markSeq}`;
+            this.markMap.set(markName, { endMs: this.sentMsTotal });
+            this.options.onMarkToTwilio(markName);
+            this.lastMarkSentMs = this.sentMsTotal;
+          }
+
           // NDJSON: Log audio_delta (sampled every 100 frames)
           this.audioDeltaCount++;
           if (this.audioDeltaCount === 1 || this.audioDeltaCount % 100 === 0) {
-            const bytes = Buffer.from(base64Mulaw, 'base64').length;
             this.logEvent({
               event: 'audio_delta',
               delta_count: this.audioDeltaCount,
@@ -1145,6 +1183,33 @@ ${fieldMapping}
       console.log('🔗 Linked call_log_id to reservation (ID:', data[0].id, ')');
     } else {
       console.log('ℹ️ No existing reservation found for call_sid:', this.options.callSid);
+    }
+  }
+
+  /**
+   * Handle incoming mark event from Twilio.
+   * This is called when Twilio acknowledges a mark we sent.
+   * Updates playedMsTotal to track actual playback position.
+   */
+  onTwilioMark(name?: string): void {
+    if (!name) {
+      console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      return;
+    }
+
+    const markInfo = this.markMap.get(name);
+    if (markInfo) {
+      // Only update playedMsTotal if not in clearing state (Phase3: truncate handling)
+      if (!this.clearing) {
+        this.playedMsTotal = Math.max(this.playedMsTotal, markInfo.endMs);
+        console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+      } else {
+        console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+      }
+      // Clean up processed mark
+      this.markMap.delete(name);
+    } else {
+      console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
     }
   }
 

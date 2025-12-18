@@ -1,6 +1,7 @@
 export interface TwilioMediaMessage {
-  event: 'start' | 'media' | 'stop';
+  event: 'connected' | 'start' | 'media' | 'mark' | 'stop';
   streamSid?: string;
+  sequenceNumber?: string;
   start?: {
     streamSid: string;
     accountSid: string;
@@ -14,6 +15,9 @@ export interface TwilioMediaMessage {
   };
   media?: {
     payload: string; // Base64-encoded mu-law audio at 8kHz mono
+  };
+  mark?: {
+    name: string;
   };
 }
 
