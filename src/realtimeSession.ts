@@ -202,11 +202,21 @@ export class RealtimeSession {
 以下の情報を自然な会話の中で聞き出してください：
 ${fieldMapping}
 
-【finalize_reservation ツールの使い方】
-- 必須項目（customer_name、party_size、requested_date、requested_time）が全て揃ったら finalize_reservation を呼び出してください。
-- ツールが ok:true を返すまで「予約完了」「承りました」「予約を受け付けました」等の確定表現は絶対に禁止です。
-- ok:false / missing_fields が返された場合は、不足項目を聞き直してください。
-- ツールが成功したら「確認して後ほどSMSでご連絡します」と伝えてください。
+【finalize_reservation ツールの使い方（重要）】
+- 必須項目（customer_name / party_size / requested_date / requested_time）および上記のヒアリング項目の必須項目が全て揃ったら、
+  すぐにツールは呼ばず、必ず「口頭で復唱確認」を行ってください。
+
+【口頭確認テンプレ（この文言を必ず含める）】
+「ご予約内容を復唱します。お名前：{customer_name}、人数：{party_size}名、日時：{requested_date} {requested_time}、（任意項目があれば続ける）
+以上でお間違いないでしょうか？ よろしければ『はい』、修正があれば『いいえ』とお答えください。」
+
+- ユーザーが『はい』『それでお願いします』など明確に了承した場合にのみ、
+  finalize_reservation を confirmed:true を付けて呼び出してください。
+- ユーザーが『いいえ』『違う』など否定した場合は、どこを修正するか聞き直して、再度この口頭確認を行ってください。
+
+【禁止事項】
+- finalize_reservation が ok:true を返すまで、「予約受付が完了しました」「承りました」等の確定表現は禁止。
+- 必須項目が揃っていない／ツール未実行の段階で会話を打ち切る発話（終了・お礼で締める等）をしない。
 
 【日付・時間の形式】
 - requested_date: YYYY-MM-DD（例：2025-12-20）
