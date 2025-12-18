@@ -11,6 +11,13 @@ import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT } from './p
 import { notificationService } from './notifications';
 import { DebugObserver } from './debugObserver';
 
+// Source constants for reservation_requests.source column
+// Must match CHECK constraint: reservation_requests_source_check
+const RESERVATION_SOURCE = {
+  REALTIME_TOOL: 'phone_call_realtime_tool',
+  REALTIME_FALLBACK: 'phone_call_realtime_fallback',
+} as const;
+
 export interface RealtimeSessionOptions {
   streamSid: string;
   callSid: string;
@@ -654,7 +661,7 @@ ${fieldMapping}
           party_size: args.party_size,
           status: 'pending',
           answers: dbAnswers,
-          source: 'phone_call_realtime_tool'
+          source: RESERVATION_SOURCE.REALTIME_TOOL
         })
         .select()
         .single();
@@ -690,8 +697,10 @@ ${fieldMapping}
         message: dbErr?.message,
         details: dbErr?.details,
         hint: dbErr?.hint,
+        source: RESERVATION_SOURCE.REALTIME_TOOL,
       });
-      return { ok: false, message: 'データベースエラーが発生しました' };
+      // Don't ask user to retry - DB errors won't be fixed by retry
+      return { ok: false, message: '内容は記録しました。後ほど折り返しご連絡いたします' };
     }
   }
 
@@ -817,7 +826,7 @@ ${fieldMapping}
           party_size: extracted.party_size || null,
           status: 'pending',
           answers: extracted.answers || {},
-          source: 'phone_call_realtime_fallback',
+          source: RESERVATION_SOURCE.REALTIME_FALLBACK,
           internal_note: `[LLM Fallback] ${extracted.requested_datetime_text || ''}`
         })
         .select()
