@@ -5,7 +5,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import Stripe from 'stripe';
 import { config } from './config';
-import { writeLog } from './logging';
+import { writeLog, closeLogStream } from './logging';
 import { RealtimeLogEvent } from './types';
 import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT } from './prompts';
 import { notificationService } from './notifications';
@@ -1148,6 +1148,9 @@ ${fieldMapping}
       this.ws.close();
     }
     this.saveCallLogToSupabase();
+
+    // Close the log file WriteStream
+    closeLogStream(this.options.logFile);
   }
 
   /**
