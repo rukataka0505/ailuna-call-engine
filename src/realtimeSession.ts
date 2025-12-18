@@ -338,9 +338,10 @@ ${fieldMapping}
             party_size: { type: 'integer', description: '予約人数（正の整数）' },
             requested_date: { type: 'string', description: '予約日（YYYY-MM-DD形式）' },
             requested_time: { type: 'string', description: '予約時間（HH:mm形式）' },
-            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' }
+            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' },
+            confirmed: { type: 'boolean', description: 'ユーザーが口頭で「はい」と明確に了承した場合のみ true' }
           },
-          required: ['customer_name', 'party_size', 'requested_date', 'requested_time']
+          required: ['customer_name', 'party_size', 'requested_date', 'requested_time', 'confirmed']
         }
       }],
       tool_choice: 'auto'
