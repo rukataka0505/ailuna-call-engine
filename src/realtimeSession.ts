@@ -399,7 +399,7 @@ ${fieldMapping}
           this.sendJson({
             type: 'response.create',
             response: {
-              output_modalities: ['text', 'audio'],
+              modalities: ['text', 'audio'],
             },
           });
           // NDJSON: Log response.create sent (initial greeting)
@@ -599,7 +599,7 @@ ${fieldMapping}
     // 4. Trigger response.create to continue conversation
     this.sendJson({
       type: 'response.create',
-      response: { output_modalities: ['text', 'audio'] }
+      response: { modalities: ['text', 'audio'] }
     });
     // NDJSON: Log response.create sent (after tool call)
     this.logEvent({ event: 'response_create_sent', trigger: 'tool' });
