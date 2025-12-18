@@ -24,6 +24,7 @@ export interface RealtimeSessionOptions {
   logFile: string;
   toPhoneNumber?: string;
   fromPhoneNumber?: string;
+  userId?: string;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
 }
@@ -77,6 +78,7 @@ export class RealtimeSession {
     this.timings.callStart = this.startTime;
     this.options = options;
     this.callerNumber = options.fromPhoneNumber;
+    this.userId = options.userId; // Pre-populated from subscription check
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
     this.openai = new OpenAI({ apiKey: config.openAiApiKey });
 
@@ -92,20 +94,39 @@ export class RealtimeSession {
   }
 
   private async loadSystemPrompt(): Promise<void> {
-    // 1. Supabase から設定を取得
-    if (this.options.toPhoneNumber) {
+    // Skip profile lookup if userId was already passed from subscription check
+    if (this.userId) {
+      console.log(`✅ Using pre-validated userId: ${this.userId}`);
+      // userId がある場合は、直接 user_prompts を取得
+      try {
+        const { data: promptData, error: promptError } = await this.supabase
+          .from('user_prompts')
+          .select('system_prompt, config_metadata')
+          .eq('user_id', this.userId)
+          .single();
+
+        if (promptError || !promptData) {
+          console.warn('⚠️ User prompt settings not found:', promptError?.message);
+        } else {
+          await this.applyPromptSettings(promptData);
+          return;
+        }
+      } catch (err) {
+        console.error('❌ Failed to fetch user_prompts:', err);
+      }
+      // Fall through to file-based prompt if DB fetch fails
+    } else if (this.options.toPhoneNumber) {
+      // Fallback: Lookup profile by phone number (legacy path)
       try {
         console.log(`🔍 Looking up profile for phone number: ${this.options.toPhoneNumber}`);
 
-        // profiles テーブルから user_id と is_subscribed を取得する
         const { data: profile, error: profileError } = await this.supabase
           .from('profiles')
           .select('id, is_subscribed')
           .eq('phone_number', this.options.toPhoneNumber)
 
-        // デバッグ用: 取得したプロファイルデータの詳細ログ
         if (profile && profile[0]) {
-          console.log(`🔍 [Debug] Profile Found: ID=${profile[0].id}, Subscribed=${profile[0].is_subscribed}, Phone=${this.options.toPhoneNumber}`);
+          console.log(`🔍 [Debug] Profile Found: ID=${profile[0].id}`);
         } else {
           console.log(`⚠️ [Debug] No profile found for phone number: ${this.options.toPhoneNumber}`);
         }
@@ -115,14 +136,11 @@ export class RealtimeSession {
         } else {
           this.userId = profile[0].id;
 
-          // サブスクリプション状態を確認する
           if (!profile[0].is_subscribed) {
-            console.warn(`🚫 [RealtimeSession] User ${this.userId} is not subscribed. Continuing (gatekeeper at index.ts should have handled this, or this is a debug access).`);
-            // throw new Error('User subscription is not active. Call rejected.'); // Phase 3: Downgraded to warning
+            console.warn(`🚫 [RealtimeSession] User ${this.userId} is not subscribed.`);
           }
 
           console.log(`✅ User ${this.userId} subscription verified.`);
-          // user_prompts テーブルから system_prompt と config_metadata を取得
           const { data: promptData, error: promptError } = await this.supabase
             .from('user_prompts')
             .select('system_prompt, config_metadata')
@@ -130,30 +148,55 @@ export class RealtimeSession {
             .single();
 
           if (promptError || !promptData) {
-            console.warn('⚠️ User prompt settings not found or error:', promptError?.message);
+            console.warn('⚠️ User prompt settings not found:', promptError?.message);
           } else {
-            console.log('✨ Loaded dynamic settings from Supabase');
+            await this.applyPromptSettings(promptData);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('❌ Failed to fetch from Supabase:', err);
+      }
+    }
 
-            // 予約ヒアリング項目の取得
-            let reservationInstruction = '';
-            try {
-              const { data: formFields, error: formError } = await this.supabase
-                .from('reservation_form_fields')
-                .select('field_key, label, field_type, required, options, description, display_order')
-                .eq('user_id', this.userId)
-                .eq('enabled', true)
-                .order('display_order', { ascending: true });
+    // Fallback: system_prompt.md
+    const mdPath = path.join(process.cwd(), 'system_prompt.md');
+    try {
+      const content = await fs.readFile(mdPath, 'utf-8');
+      if (content) {
+        console.log('📄 Loaded system prompt from system_prompt.md');
+        this.currentSystemPrompt = content;
+        return;
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to load system_prompt.md, using default prompt');
+    }
+  }
 
-              if (formFields && formFields.length > 0) {
-                // Save fields for validation in handleFinalizeReservation
-                this.reservationFields = formFields;
-                // Build field list with field_key mapping for finalize_reservation
-                const fieldMapping = formFields.map(f => {
-                  const reqStr = f.required ? '(必須)' : '(任意)';
-                  return `  - ${f.field_key}: ${f.label} ${reqStr}`;
-                }).join('\n');
+  /**
+   * Apply prompt settings from user_prompts table
+   */
+  private async applyPromptSettings(promptData: { system_prompt: string | null; config_metadata: any }): Promise<void> {
+    console.log('✨ Loaded dynamic settings from Supabase');
 
-                reservationInstruction = `
+    // 予約ヒアリング項目の取得
+    let reservationInstruction = '';
+    try {
+      const { data: formFields, error: formError } = await this.supabase
+        .from('reservation_form_fields')
+        .select('field_key, label, field_type, required, options, description, display_order')
+        .eq('user_id', this.userId)
+        .eq('enabled', true)
+        .order('display_order', { ascending: true });
+
+      if (formFields && formFields.length > 0) {
+        this.reservationFields = formFields;
+        const fieldMapping = formFields.map(f => {
+          const reqStr = f.required ? '(必須)' : '(任意)';
+          return `  - ${f.field_key}: ${f.label} ${reqStr}`;
+        }).join('\n');
+
+        reservationInstruction = `
 【予約ヒアリング項目】
 以下の情報を自然な会話の中で聞き出してください：
 ${fieldMapping}
@@ -173,70 +216,40 @@ ${fieldMapping}
 - 必ず正の整数で指定してください（例：2）
 - 「2名」「2人」などは数値 2 に変換してください。
 `;
-              }
-            } catch (err) {
-              console.warn('⚠️ Failed to fetch reservation fields:', err);
-            }
+      }
+    } catch (err) {
+      console.warn('⚠️ Failed to fetch reservation fields:', err);
+    }
 
-            // config_metadata から greeting_message を取得（デフォルト値あり）
-            const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
-            // config_metadata から reservation_gate_question を取得（デフォルト値あり）
-            const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
+    const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
+    const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
 
-            // 固定の挨拶指示ブロックを作成
-            const fixedInstruction = `
+    const fixedInstruction = `
 【重要：第一声の指定】
 通話が開始された際、AIの「最初の発話」は必ず以下の文言を一言一句変えずに読み上げてください。
 発話内容：${greeting} ${reservationGateQuestion}
 
 【厳守事項】
 - 上記の「挨拶文 + 予約確認の問い」をセットで発話してください。
-- これ以外の言葉（例：「どうされましたか」などの自由な問いかけ）は付け足さないでください。
-- 一度ターンを終了して、相手（ユーザー）の発言を待ってください。
+- これ以外の言葉は付け足さないでください。
+- 一度ターンを終了して、相手の発言を待ってください。
 `;
 
-            // 既存のプロンプトと結合
-            let basePrompt = promptData.system_prompt || '';
-
-            // 予約項目がある場合は追記
-            if (reservationInstruction) {
-              basePrompt += `\n\n${reservationInstruction}`;
-            }
-
-            if (basePrompt) {
-              this.currentSystemPrompt = `${fixedInstruction}\n\n${basePrompt}`;
-            } else {
-              // system_prompt が空の場合でも、挨拶指示は適用
-              this.currentSystemPrompt = fixedInstruction;
-            }
-
-            return; // Supabase から取得できた場合はここで終了
-          }
-        }
-      } catch (err) {
-        console.error('❌ Failed to fetch from Supabase:', err);
-      }
+    let basePrompt = promptData.system_prompt || '';
+    if (reservationInstruction) {
+      basePrompt += `\n\n${reservationInstruction}`;
     }
 
-    // 2. フォールバック: system_prompt.md
-    const mdPath = path.join(process.cwd(), 'system_prompt.md');
-    try {
-      const content = await fs.readFile(mdPath, 'utf-8');
-      if (content) {
-        console.log('📄 Loaded system prompt from system_prompt.md');
-        this.currentSystemPrompt = content;
-        return;
-      }
-    } catch (error) {
-      console.warn('⚠️ Failed to load system_prompt.md, using default prompt');
-      console.warn('⚠️ Please ensure system_prompt.md exists or configure prompts in the database');
+    if (basePrompt) {
+      this.currentSystemPrompt = `${fixedInstruction}\n\n${basePrompt}`;
+    } else {
+      this.currentSystemPrompt = fixedInstruction;
     }
-
-    // system_prompt.md の読み込みにも失敗した場合は、初期値（汎用的なデフォルト）をそのまま使用
   }
 
   async connect(): Promise<void> {
-    await this.loadSystemPrompt();
+    // Start loading system prompt in parallel with WebSocket connection
+    const promptPromise = this.loadSystemPrompt();
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${config.openAiRealtimeModel}`, {
@@ -246,12 +259,15 @@ ${fieldMapping}
         },
       });
 
-      ws.on('open', () => {
+      ws.on('open', async () => {
         this.connected = true;
         this.ws = ws;
         console.log('🤖 OpenAI Realtime session connected');
         // NDJSON: Log WebSocket open
         this.logEvent({ event: 'openai_ws_open' });
+
+        // Wait for system prompt to be loaded before sending session.update
+        await promptPromise;
         this.sendSessionUpdate();
         resolve();
       });

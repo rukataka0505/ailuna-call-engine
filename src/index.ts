@@ -61,11 +61,12 @@ app.post('/incoming-call-realtime', async (req, res) => {
   const from = req.body.From;
 
   // --- Phase 3: Subscription Check Start ---
+  let userId: string | undefined;
   try {
     const supabase = createClient(config.supabaseUrl, config.supabaseServiceRoleKey);
     const { data: profile, error } = await supabase
       .from('profiles')
-      .select('is_subscribed')
+      .select('id, is_subscribed')
       .eq('phone_number', to)
       .single();
 
@@ -90,7 +91,8 @@ app.post('/incoming-call-realtime', async (req, res) => {
       res.type('text/xml').send(rejectTwiml);
       return;
     }
-    console.log(`✅ Subscription verified for ${to}`);
+    userId = profile.id;
+    console.log(`✅ Subscription verified for ${to} (userId: ${userId})`);
   } catch (err) {
     console.error('❌ Error checking subscription:', err);
     // On DB error, fail-closed (reject) for safety
@@ -108,13 +110,14 @@ app.post('/incoming-call-realtime', async (req, res) => {
   const wsUrl = buildWsUrl('/twilio-media');
   console.log('Generated WS URL:', wsUrl);
 
-  // <Parameter> タグで toPhoneNumber を渡す
+  // <Parameter> タグで toPhoneNumber, fromPhoneNumber, userId を渡す
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
     <Stream url="${wsUrl}">
       <Parameter name="toPhoneNumber" value="${to}" />
       <Parameter name="fromPhoneNumber" value="${from}" />
+      <Parameter name="userId" value="${userId}" />
     </Stream>
   </Connect>
 </Response>`;
@@ -133,9 +136,10 @@ wss.on('connection', (socket, req) => {
       const data = JSON.parse(msg.toString()) as TwilioMediaMessage;
       if (data.event === 'start' && data.start) {
         const { streamSid, callSid, customParameters } = data.start;
-        // customParameters から toPhoneNumber, fromPhoneNumber を取得
+        // customParameters から toPhoneNumber, fromPhoneNumber, userId を取得
         const toPhoneNumber = customParameters?.toPhoneNumber;
         const fromPhoneNumber = customParameters?.fromPhoneNumber;
+        const userId = customParameters?.userId;
 
         console.log('Start event received. Custom params:', customParameters);
         const logFile = createLogFilePath();
@@ -164,6 +168,7 @@ wss.on('connection', (socket, req) => {
           logFile,
           toPhoneNumber,
           fromPhoneNumber,
+          userId,
           onAudioToTwilio: (base64Mulaw) => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(
