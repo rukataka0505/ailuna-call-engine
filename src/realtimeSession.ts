@@ -254,7 +254,22 @@ ${fieldMapping}
     const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
     const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
 
+    // Generate current JST datetime for relative date calculation
+    const jstNow = new Date().toLocaleString('ja-JP', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      weekday: 'long',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
     const fixedInstruction = `
+【現在日時（日本標準時）】
+${jstNow}
+※「明日」「来週金曜」などの相対日時はこの日時を基準に計算してください。
+
 【重要：第一声の指定】
 通話が開始された際、AIの「最初の発話」は必ず以下の文言を一言一句変えずに読み上げてください。
 発話内容：${greeting} ${reservationGateQuestion}
