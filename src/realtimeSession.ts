@@ -379,14 +379,23 @@ ${fieldMapping}
 
       // OpenAI Realtime API error event - explicit capture for observability
       if (event.type === 'error') {
-        console.error('❌ [OpenAI Realtime Error]', {
-          error_code: event.error?.code,
+        const errorCode = event.error?.code;
+        const errorDetails = {
+          error_code: errorCode,
           error_message: event.error?.message,
           event_id: event.event_id,
-        });
+        };
+
+        // Downgrade known benign errors to warn level
+        if (errorCode === 'response_cancel_not_active') {
+          console.warn('⚠️ [OpenAI Realtime] Cancel attempted with no active response', errorDetails);
+        } else {
+          console.error('❌ [OpenAI Realtime Error]', errorDetails);
+        }
+
         this.logEvent({
           event: 'realtime_error',
-          error_code: event.error?.code,
+          error_code: errorCode,
           error_message: event.error?.message,
         });
       }
