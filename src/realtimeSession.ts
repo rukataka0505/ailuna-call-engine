@@ -28,6 +28,7 @@ export interface RealtimeSessionOptions {
   debugObserver: DebugObserver;
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
+  onMarkToTwilio: (name: string) => void;
 }
 
 /**
@@ -1146,6 +1147,18 @@ ${fieldMapping}
     } else {
       console.log('ℹ️ No existing reservation found for call_sid:', this.options.callSid);
     }
+  }
+
+  /**
+   * Handle incoming mark event from Twilio.
+   * This is called when Twilio acknowledges a mark we sent.
+   */
+  onTwilioMark(name?: string): void {
+    if (!name) {
+      console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      return;
+    }
+    console.log(`🏷️ [Mark] Twilio acknowledged mark: ${name}`);
   }
 
   close() {
