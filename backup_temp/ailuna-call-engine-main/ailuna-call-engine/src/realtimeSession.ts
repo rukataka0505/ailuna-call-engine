@@ -45,8 +45,6 @@ export class RealtimeSession {
   private readonly options: RealtimeSessionOptions;
 
   private connected = false;
-  private isUserSpeaking = false;
-  private isResponseActive = false; // Track if OpenAI response is active for smart cancel
   private turnCount = 0;
 
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
@@ -57,7 +55,6 @@ export class RealtimeSession {
   private audioDeltaCount = 0; // Counter for audio_delta sampling
   private mediaCount = 0; // Counter for twilio_media sampling
   private sessionUpdateTimeout?: ReturnType<typeof setTimeout>; // B対策: session.update ACK timeout
-  private speakingTimeout?: ReturnType<typeof setTimeout>; // D対策: isUserSpeaking failsafe
 
   private userId?: string;
   private callerNumber?: string;
@@ -216,16 +213,39 @@ ${fieldMapping}
 - 必須項目（customer_name / party_size / requested_date / requested_time）および上記のヒアリング項目の必須項目が全て揃ったら、
   すぐにツールは呼ばず、必ず「口頭で復唱確認」を行ってください。
 - 予約日時を復唱確認する際、「明日」「来週金曜」などは現在日時から計算して正確な日付に変換し、確認してください。
+
 【口頭確認テンプレ（この文言を必ず含める）】
 「ご予約内容を復唱します。お名前：{customer_name}、人数：{party_size}名、日時：{requested_date} {requested_time}、（任意項目があれば続ける）
 以上でお間違いないでしょうか？ よろしければ『はい』、修正があれば『いいえ』とお答えください。」
 
-- ユーザーが『はい』『それでお願いします』など明確に了承した場合にのみ、
-  finalize_reservation を confirmed:true を付けて呼び出してください。
+- ユーザーが『はい』『それでお願いします』など明確に了承した場合にのみ、次の【送信宣言】を行い、その後 finalize_reservation を confirmed:true で呼び出してください。
 - ユーザーが『いいえ』『違う』など否定した場合は、どこを修正するか聞き直して、再度この口頭確認を行ってください。
 
+【送信宣言（confirmed:true でツールを呼ぶ直前に必ず発話）】
+ツールを呼び出す直前に、必ず以下の文言を一言一句変えずに発話してください：
+「ではこの内容で送信します。少々お待ちください。」
+※この発話の後、すぐに finalize_reservation を confirmed:true で呼び出してください。
+
+【ツール結果に応じた発話（ok と error_type で分岐）】
+ツールは以下の形式で結果を返します：
+{ "ok": true/false, "error_type": null/文字列, "message": "...", "reservation_id": "..." }
+
+分岐ルール（message ではなく ok と error_type で判断すること）：
+- ok:true の場合（成功）：
+  「受付いたしました。予約の成否は後ほどSMSでお送りしますので、ご確認ください。」
+- ok:false の場合（失敗）：
+  「申し訳ありません。送信に失敗しました。もう一度、確認からやり直します。」
+  ※失敗時は再度【口頭確認テンプレ】からやり直してください。
+
+error_type の値と意味：
+- null: 成功（ok:true の場合）
+- "not_confirmed": confirmed:true が指定されていない
+- "validation_failed": 必須項目が不足（missing_fields に詳細）
+- "db_error": サーバー/DBエラー
+
 【禁止事項】
-- finalize_reservation が ok:true を返すまで、「予約受付が完了しました」「承りました」等の確定表現は禁止。
+- finalize_reservation が ok:true を返すまで、「予約受付が完了しました」「承りました」「受付しました」等の確定表現は禁止。
+- ok:true 後も「承りました」「確定しました」「ご予約が完了しました」などは言わず、上記の成功発話のみを使用すること。
 - 必須項目が揃っていない／ツール未実行の段階で会話を打ち切る発話（終了・お礼で締める等）をしない。
 
 【日付・時間の形式】
@@ -341,9 +361,10 @@ ${fieldMapping}
             party_size: { type: 'integer', description: '予約人数（正の整数）' },
             requested_date: { type: 'string', description: '予約日（YYYY-MM-DD形式）' },
             requested_time: { type: 'string', description: '予約時間（HH:mm形式）' },
-            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' }
+            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' },
+            confirmed: { type: 'boolean', description: 'ユーザーが口頭で「はい」と明確に了承した場合のみ true' }
           },
-          required: ['customer_name', 'party_size', 'requested_date', 'requested_time']
+          required: ['customer_name', 'party_size', 'requested_date', 'requested_time', 'confirmed']
         }
       }],
       tool_choice: 'auto'
@@ -456,15 +477,6 @@ ${fieldMapping}
           if (config.debugRealtimeEvents) {
             console.debug('ℹ️ [OpenAI Realtime] Cancel with no active response (benign)', errorDetails);
           }
-        } else if (errorCode === 'insufficient_quota' || errorCode === 'billing_hard_limit_reached') {
-          // Critical: API credits exhausted
-          console.error('🚨💳 [OpenAI API] クレジット切れです！APIの支払い状況を確認してください。');
-          console.error('🚨💳 [OpenAI API] Billing URL: https://platform.openai.com/account/billing');
-          console.error('❌ [OpenAI Realtime Error]', errorDetails);
-        } else if (errorCode === 'rate_limit_exceeded') {
-          // Rate limit hit
-          console.error('⚠️🔄 [OpenAI API] レート制限に達しました。しばらく待ってから再試行してください。');
-          console.error('❌ [OpenAI Realtime Error]', errorDetails);
         } else {
           console.error('❌ [OpenAI Realtime Error]', errorDetails);
         }
@@ -504,10 +516,7 @@ ${fieldMapping}
         }
       }
 
-      // Track response lifecycle for smart cancel
-      if (event.type === 'response.created') {
-        this.isResponseActive = true;
-      }
+      // response.created is tracked for logging purposes only (smart cancel removed)
 
       // Capture assistant item_id for playback tracking (truncate preparation)
       if (event.type === 'response.output_item.added') {
@@ -516,18 +525,18 @@ ${fieldMapping}
           this.currentAssistantItemId = item.id;
           // Reset playback tracker for new assistant message
           this.sentMsTotal = 0;
+          this.playedMsTotal = 0;
           this.lastMarkSentMs = 0;
           this.markSeq = 0;
           this.markMap.clear();
+          // Clear the clearing state when new assistant response starts
+          this.clearing = false;
           console.log(`🎯 [PlaybackTracker] New assistant item: ${item.id}`);
         }
       }
 
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
-        // ユーザー発話中は音声を送らない
-        if (this.isUserSpeaking) {
-          return;
-        }
+        // Note: Audio is always forwarded to Twilio. Barge-in is handled via clear + truncate.
 
         const base64Mulaw = event.delta ?? event.audio?.data;
         if (base64Mulaw) {
@@ -601,45 +610,35 @@ ${fieldMapping}
           }
         }
 
-        // Mark response as complete
-        this.isResponseActive = false;
+        // Response lifecycle logging (smart cancel removed)
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        console.log('🎙️ ユーザー発話開始 (Barge-in)');
-        this.isUserSpeaking = true;
+        console.log('�️ ユーザー発話開始 (Barge-in)');
         // NDJSON: Log VAD speech started
         this.logEvent({ event: 'vad_event', action: 'start' });
-        this.options.onClearTwilio(); // Twilioのバッファをクリア
-        // Smart cancel: Only send if response is active (or if feature flag disabled)
-        if (!config.enableSmartCancel || this.isResponseActive) {
-          this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
-          this.isResponseActive = false;
-        }
 
-        // D対策: Start 5s failsafe timer for isUserSpeaking
-        if (this.speakingTimeout) {
-          clearTimeout(this.speakingTimeout);
+        // Set clearing state BEFORE sending clear to Twilio
+        // This prevents mark events during clearing from updating playedMsTotal
+        this.clearing = true;
+
+        // Clear Twilio's audio buffer immediately
+        this.options.onClearTwilio();
+
+        // Send truncate to OpenAI if we have an active assistant response
+        if (this.currentAssistantItemId) {
+          const endMs = this.playedMsTotal;
+          console.log(`✂️ [Truncate] item_id: ${this.currentAssistantItemId}, audio_end_ms: ${endMs}`);
+          this.sendJson({
+            type: 'conversation.item.truncate',
+            item_id: this.currentAssistantItemId,
+            content_index: 0,
+            audio_end_ms: endMs
+          });
         }
-        this.speakingTimeout = setTimeout(() => {
-          if (this.isUserSpeaking) {
-            console.warn('⚠️ [Failsafe] isUserSpeaking stuck for 5s, force resetting');
-            this.isUserSpeaking = false;
-            this.logEvent({
-              event: 'speaking_failsafe',
-              error_message: 'isUserSpeaking stuck for 5000ms, force reset'
-            });
-          }
-        }, 5000);
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
-        this.isUserSpeaking = false;
-        // D対策: Clear speakingTimeout on normal stop
-        if (this.speakingTimeout) {
-          clearTimeout(this.speakingTimeout);
-          this.speakingTimeout = undefined;
-        }
         // NDJSON: Log VAD speech stopped
         this.logEvent({ event: 'vad_event', action: 'stop' });
       }
@@ -677,59 +676,83 @@ ${fieldMapping}
     // Timing: Record reservation called
     this.timings.reservationCalled = Date.now();
 
-    let result: { ok: boolean; message?: string; missing_fields?: string[] };
+    // Phase 4: Log reservation flow phase - received
+    this.logEvent({
+      event: 'reservation_phase',
+      phase: 'received',
+      call_id: callId
+    });
+
+    let result: { ok: boolean; message: string; error_type: string | null; missing_fields?: string[]; reservation_id?: string };
+    let parsedArgs: any = {};
 
     try {
-      const args = JSON.parse(argsJson);
+      parsedArgs = JSON.parse(argsJson);
 
-      // 1. Validation
-      const missingFields: string[] = [];
-
-      // Check required fields from reservation_form_fields (enabled && required)
-      const requiredFields = this.reservationFields.filter(f => f.enabled !== false && f.required);
-      for (const f of requiredFields) {
-        // Check in answers or top-level args
-        const val = args.answers?.[f.field_key] || args[f.field_key];
-        if (!val || String(val).trim() === '') {
-          missingFields.push(f.label);
-        }
-      }
-
-      // Validate party_size: must be positive integer
-      if (!args.party_size || args.party_size <= 0 || !Number.isInteger(args.party_size)) {
-        missingFields.push('party_size (正の整数が必要です)');
-      }
-
-      // Validate requested_date: must be YYYY-MM-DD
-      if (!args.requested_date || !/^\d{4}-\d{2}-\d{2}$/.test(args.requested_date)) {
-        missingFields.push('requested_date (YYYY-MM-DD形式が必要です)');
-      }
-
-      // Validate requested_time: must be HH:mm
-      if (!args.requested_time || !/^\d{2}:\d{2}$/.test(args.requested_time)) {
-        missingFields.push('requested_time (HH:mm形式が必要です)');
-      }
-
-      if (missingFields.length > 0) {
-        console.log('❌ Validation failed, missing fields:', missingFields);
-        result = { ok: false, message: '必須項目が不足しています', missing_fields: missingFields };
+      // Phase 1 Guard: confirmed check FIRST (before any DB operation)
+      if (parsedArgs.confirmed !== true) {
+        console.log('❌ confirmed !== true, skipping DB insert');
+        result = { ok: false, message: 'not_confirmed', error_type: 'not_confirmed' };
       } else {
-        // 2. DB Insert (with conflict handling)
-        const insertResult = await this.insertReservationFromTool(args);
-        // Timing: Record DB done
-        this.timings.reservationDbDone = Date.now();
-        result = insertResult;
-      }
+        // 1. Validation
+        const missingFields: string[] = [];
+
+        // Check required fields from reservation_form_fields (enabled && required)
+        const requiredFields = this.reservationFields.filter(f => f.enabled !== false && f.required);
+        for (const f of requiredFields) {
+          // Check in answers or top-level args
+          const val = parsedArgs.answers?.[f.field_key] || parsedArgs[f.field_key];
+          if (!val || String(val).trim() === '') {
+            missingFields.push(f.label);
+          }
+        }
+
+        // Validate party_size: must be positive integer
+        if (!parsedArgs.party_size || parsedArgs.party_size <= 0 || !Number.isInteger(parsedArgs.party_size)) {
+          missingFields.push('party_size (正の整数が必要です)');
+        }
+
+        // Validate requested_date: must be YYYY-MM-DD
+        if (!parsedArgs.requested_date || !/^\d{4}-\d{2}-\d{2}$/.test(parsedArgs.requested_date)) {
+          missingFields.push('requested_date (YYYY-MM-DD形式が必要です)');
+        }
+
+        // Validate requested_time: must be HH:mm
+        if (!parsedArgs.requested_time || !/^\d{2}:\d{2}$/.test(parsedArgs.requested_time)) {
+          missingFields.push('requested_time (HH:mm形式が必要です)');
+        }
+
+        if (missingFields.length > 0) {
+          console.log('❌ Validation failed, missing fields:', missingFields);
+          result = { ok: false, message: 'validation_failed', error_type: 'validation_failed', missing_fields: missingFields };
+        } else {
+          // 2. DB Insert (with conflict handling)
+          const insertResult = await this.insertReservationFromTool(parsedArgs);
+          // Timing: Record DB done
+          this.timings.reservationDbDone = Date.now();
+          result = insertResult;
+        }
+      } // End of confirmed === true block
     } catch (err) {
       console.error('❌ finalize_reservation error:', err);
-      result = { ok: false, message: 'サーバーエラーが発生しました' };
+      result = { ok: false, message: 'db_error', error_type: 'db_error' };
     }
 
-    // Log tool call for debugging and audit
+    // Phase 4: Log reservation flow phase - success or fail
+    this.logEvent({
+      event: 'reservation_phase',
+      phase: result.ok ? 'success' : 'fail',
+      call_id: callId,
+      error_type: result.error_type,
+      reservation_id: result.reservation_id
+    });
+
+    // Log tool call for debugging and audit (includes confirmed flag for easy filtering)
     this.logEvent({
       event: 'tool_call',
       tool: 'finalize_reservation',
       call_id: callId,
+      confirmed: parsedArgs.confirmed,
       args: argsJson,
       result: JSON.stringify(result)
     });
@@ -761,9 +784,9 @@ ${fieldMapping}
    * Insert reservation into DB from tool call.
    * Uses call_sid as unique key with conflict handling.
    */
-  private async insertReservationFromTool(args: any): Promise<{ ok: boolean; message?: string }> {
+  private async insertReservationFromTool(args: any): Promise<{ ok: boolean; message: string; error_type: string | null; reservation_id?: string }> {
     if (!this.userId) {
-      return { ok: false, message: 'User not identified' };
+      return { ok: false, message: 'user_not_identified', error_type: 'db_error' };
     }
 
     const callSid = this.options.callSid;
@@ -801,7 +824,7 @@ ${fieldMapping}
         if (insertErr.code === '23505') {
           // Unique constraint violation - already exists (race condition)
           console.log('⚠️ Race condition detected, reservation already exists');
-          return { ok: true, message: '予約は既に登録済みです' };
+          return { ok: true, message: 'already_exists', error_type: null };
         }
         throw insertErr;
       }
@@ -824,7 +847,7 @@ ${fieldMapping}
         .then(() => console.log('✅ Notification sent'))
         .catch((err) => console.error('❌ Notification failed', err));
 
-      return { ok: true, message: '予約を受け付けました' };
+      return { ok: true, message: 'created', error_type: null, reservation_id: newRes.id };
     } catch (dbErr: any) {
       console.error('❌ DB error in insertReservationFromTool:', {
         code: dbErr?.code,
@@ -834,7 +857,7 @@ ${fieldMapping}
         source: RESERVATION_SOURCE.REALTIME_TOOL,
       });
       // Don't ask user to retry - DB errors won't be fixed by retry
-      return { ok: false, message: '内容は記録しました。後ほど折り返しご連絡いたします' };
+      return { ok: false, message: 'db_error', error_type: 'db_error' };
     }
   }
 
@@ -1202,7 +1225,9 @@ ${fieldMapping}
    */
   onTwilioMark(name?: string): void {
     if (!name) {
-      console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      if (config.debugMarkEvents) {
+        console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      }
       return;
     }
 
@@ -1211,14 +1236,20 @@ ${fieldMapping}
       // Only update playedMsTotal if not in clearing state (Phase3: truncate handling)
       if (!this.clearing) {
         this.playedMsTotal = Math.max(this.playedMsTotal, markInfo.endMs);
-        console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        }
       } else {
-        console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        }
       }
       // Clean up processed mark
       this.markMap.delete(name);
     } else {
-      console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      if (config.debugMarkEvents) {
+        console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      }
     }
   }
 

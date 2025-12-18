@@ -45,8 +45,6 @@ export class RealtimeSession {
   private readonly options: RealtimeSessionOptions;
 
   private connected = false;
-  private isUserSpeaking = false;
-  private isResponseActive = false; // Track if OpenAI response is active for smart cancel
   private turnCount = 0;
 
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
@@ -57,7 +55,6 @@ export class RealtimeSession {
   private audioDeltaCount = 0; // Counter for audio_delta sampling
   private mediaCount = 0; // Counter for twilio_media sampling
   private sessionUpdateTimeout?: ReturnType<typeof setTimeout>; // B対策: session.update ACK timeout
-  private speakingTimeout?: ReturnType<typeof setTimeout>; // D対策: isUserSpeaking failsafe
 
   private userId?: string;
   private callerNumber?: string;
@@ -341,9 +338,10 @@ ${fieldMapping}
             party_size: { type: 'integer', description: '予約人数（正の整数）' },
             requested_date: { type: 'string', description: '予約日（YYYY-MM-DD形式）' },
             requested_time: { type: 'string', description: '予約時間（HH:mm形式）' },
-            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' }
+            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' },
+            confirmed: { type: 'boolean', description: 'ユーザーが口頭で「はい」と明確に了承した場合のみ true' }
           },
-          required: ['customer_name', 'party_size', 'requested_date', 'requested_time']
+          required: ['customer_name', 'party_size', 'requested_date', 'requested_time', 'confirmed']
         }
       }],
       tool_choice: 'auto'
@@ -456,15 +454,6 @@ ${fieldMapping}
           if (config.debugRealtimeEvents) {
             console.debug('ℹ️ [OpenAI Realtime] Cancel with no active response (benign)', errorDetails);
           }
-        } else if (errorCode === 'insufficient_quota' || errorCode === 'billing_hard_limit_reached') {
-          // Critical: API credits exhausted
-          console.error('🚨💳 [OpenAI API] クレジット切れです！APIの支払い状況を確認してください。');
-          console.error('🚨💳 [OpenAI API] Billing URL: https://platform.openai.com/account/billing');
-          console.error('❌ [OpenAI Realtime Error]', errorDetails);
-        } else if (errorCode === 'rate_limit_exceeded') {
-          // Rate limit hit
-          console.error('⚠️🔄 [OpenAI API] レート制限に達しました。しばらく待ってから再試行してください。');
-          console.error('❌ [OpenAI Realtime Error]', errorDetails);
         } else {
           console.error('❌ [OpenAI Realtime Error]', errorDetails);
         }
@@ -504,10 +493,7 @@ ${fieldMapping}
         }
       }
 
-      // Track response lifecycle for smart cancel
-      if (event.type === 'response.created') {
-        this.isResponseActive = true;
-      }
+      // response.created is tracked for logging purposes only (smart cancel removed)
 
       // Capture assistant item_id for playback tracking (truncate preparation)
       if (event.type === 'response.output_item.added') {
@@ -516,18 +502,18 @@ ${fieldMapping}
           this.currentAssistantItemId = item.id;
           // Reset playback tracker for new assistant message
           this.sentMsTotal = 0;
+          this.playedMsTotal = 0;
           this.lastMarkSentMs = 0;
           this.markSeq = 0;
           this.markMap.clear();
+          // Clear the clearing state when new assistant response starts
+          this.clearing = false;
           console.log(`🎯 [PlaybackTracker] New assistant item: ${item.id}`);
         }
       }
 
       if (event.type?.startsWith?.('response.audio.delta') || event.type === 'response.output_audio.delta') {
-        // ユーザー発話中は音声を送らない
-        if (this.isUserSpeaking) {
-          return;
-        }
+        // Note: Audio is always forwarded to Twilio. Barge-in is handled via clear + truncate.
 
         const base64Mulaw = event.delta ?? event.audio?.data;
         if (base64Mulaw) {
@@ -601,45 +587,35 @@ ${fieldMapping}
           }
         }
 
-        // Mark response as complete
-        this.isResponseActive = false;
+        // Response lifecycle logging (smart cancel removed)
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        console.log('🎙️ ユーザー発話開始 (Barge-in)');
-        this.isUserSpeaking = true;
+        console.log('�️ ユーザー発話開始 (Barge-in)');
         // NDJSON: Log VAD speech started
         this.logEvent({ event: 'vad_event', action: 'start' });
-        this.options.onClearTwilio(); // Twilioのバッファをクリア
-        // Smart cancel: Only send if response is active (or if feature flag disabled)
-        if (!config.enableSmartCancel || this.isResponseActive) {
-          this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
-          this.isResponseActive = false;
-        }
 
-        // D対策: Start 5s failsafe timer for isUserSpeaking
-        if (this.speakingTimeout) {
-          clearTimeout(this.speakingTimeout);
+        // Set clearing state BEFORE sending clear to Twilio
+        // This prevents mark events during clearing from updating playedMsTotal
+        this.clearing = true;
+
+        // Clear Twilio's audio buffer immediately
+        this.options.onClearTwilio();
+
+        // Send truncate to OpenAI if we have an active assistant response
+        if (this.currentAssistantItemId) {
+          const endMs = this.playedMsTotal;
+          console.log(`✂️ [Truncate] item_id: ${this.currentAssistantItemId}, audio_end_ms: ${endMs}`);
+          this.sendJson({
+            type: 'conversation.item.truncate',
+            item_id: this.currentAssistantItemId,
+            content_index: 0,
+            audio_end_ms: endMs
+          });
         }
-        this.speakingTimeout = setTimeout(() => {
-          if (this.isUserSpeaking) {
-            console.warn('⚠️ [Failsafe] isUserSpeaking stuck for 5s, force resetting');
-            this.isUserSpeaking = false;
-            this.logEvent({
-              event: 'speaking_failsafe',
-              error_message: 'isUserSpeaking stuck for 5000ms, force reset'
-            });
-          }
-        }, 5000);
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
-        this.isUserSpeaking = false;
-        // D対策: Clear speakingTimeout on normal stop
-        if (this.speakingTimeout) {
-          clearTimeout(this.speakingTimeout);
-          this.speakingTimeout = undefined;
-        }
         // NDJSON: Log VAD speech stopped
         this.logEvent({ event: 'vad_event', action: 'stop' });
       }
@@ -1202,7 +1178,9 @@ ${fieldMapping}
    */
   onTwilioMark(name?: string): void {
     if (!name) {
-      console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      if (config.debugMarkEvents) {
+        console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      }
       return;
     }
 
@@ -1211,14 +1189,20 @@ ${fieldMapping}
       // Only update playedMsTotal if not in clearing state (Phase3: truncate handling)
       if (!this.clearing) {
         this.playedMsTotal = Math.max(this.playedMsTotal, markInfo.endMs);
-        console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        }
       } else {
-        console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        }
       }
       // Clean up processed mark
       this.markMap.delete(name);
     } else {
-      console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      if (config.debugMarkEvents) {
+        console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      }
     }
   }
 
