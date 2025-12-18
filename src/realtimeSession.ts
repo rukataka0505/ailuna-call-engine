@@ -704,19 +704,7 @@ ${fieldMapping}
       notificationAnswers[f.label] = val;
     }
 
-    // Check if reservation already exists for this call_sid
-    const { data: existing } = await this.supabase
-      .from('reservation_requests')
-      .select('id')
-      .eq('call_sid', callSid)
-      .single();
-
-    if (existing) {
-      console.log(`🔄 Reservation already exists for call_sid ${callSid} (ID: ${existing.id})`);
-      return { ok: true, message: '予約は既に登録済みです' };
-    }
-
-    // Insert new reservation
+    // Insert directly - rely on unique constraint (23505) for duplicate detection
     try {
       const { data: newRes, error: insertErr } = await this.supabase
         .from('reservation_requests')
@@ -732,7 +720,7 @@ ${fieldMapping}
           answers: dbAnswers,
           source: RESERVATION_SOURCE.REALTIME_TOOL
         })
-        .select()
+        .select('id')
         .single();
 
       if (insertErr) {
@@ -747,8 +735,9 @@ ${fieldMapping}
       console.log('✅ Reservation created via tool:', newRes.id);
       this.reservationCreated = true;
 
-      // Send notification (only on new insert)
-      await notificationService.notifyReservation({
+      // Send notification asynchronously (don't block tool output)
+      console.log('📨 Notification queued');
+      void notificationService.notifyReservation({
         user_id: this.userId,
         customer_name: args.customer_name || 'Unknown',
         customer_phone: this.callerNumber || 'Unknown',
@@ -757,7 +746,9 @@ ${fieldMapping}
         requested_time: args.requested_time,
         requested_datetime_text: `${args.requested_date} ${args.requested_time}`,
         answers: notificationAnswers
-      });
+      })
+        .then(() => console.log('✅ Notification sent'))
+        .catch((err) => console.error('❌ Notification failed', err));
 
       return { ok: true, message: '予約を受け付けました' };
     } catch (dbErr: any) {
