@@ -19,7 +19,15 @@ export interface TwilioMediaMessage {
 
 export interface RealtimeLogEvent {
   timestamp: string;
-  event: 'start' | 'user_utterance' | 'assistant_response' | 'tool_call' | 'realtime_error' | 'stop' | string;
+  event:
+  // Existing events
+  | 'start' | 'user_utterance' | 'assistant_response' | 'tool_call' | 'realtime_error' | 'stop'
+  // Realtime connection lifecycle events
+  | 'openai_ws_open' | 'openai_ws_close' | 'openai_ws_error'
+  | 'session_update_sent' | 'session_updated_received' | 'response_create_sent'
+  // Diagnostic events
+  | 'twilio_media' | 'vad_event' | 'audio_delta'
+  | string;
   role?: 'user' | 'assistant' | 'system';
   text?: string;
   streamSid?: string;
@@ -34,4 +42,13 @@ export interface RealtimeLogEvent {
   // Error event fields
   error_code?: string;
   error_message?: string;
+  // Diagnostic event fields
+  payload_bytes?: number;
+  media_count?: number;
+  delta_count?: number;
+  bytes_sent?: number;
+  close_code?: number;
+  close_reason?: string;
+  action?: 'start' | 'stop';  // For vad_event
+  trigger?: 'initial' | 'tool' | 'other';  // For response_create_sent
 }

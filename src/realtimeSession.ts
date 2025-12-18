@@ -43,6 +43,8 @@ export class RealtimeSession {
   private reservationFields: any[] = [];
 
   private reservationCreated = false; // Prevent duplicate reservations
+  private audioDeltaCount = 0; // Counter for audio_delta sampling
+  private mediaCount = 0; // Counter for twilio_media sampling
 
   private userId?: string;
   private callerNumber?: string;
@@ -122,6 +124,8 @@ export class RealtimeSession {
                 .order('display_order', { ascending: true });
 
               if (formFields && formFields.length > 0) {
+                // Save fields for validation in handleFinalizeReservation
+                this.reservationFields = formFields;
                 // Build field list with field_key mapping for finalize_reservation
                 const fieldMapping = formFields.map(f => {
                   const reqStr = f.required ? '(必須)' : '(任意)';
@@ -225,6 +229,8 @@ ${fieldMapping}
         this.connected = true;
         this.ws = ws;
         console.log('🤖 OpenAI Realtime session connected');
+        // NDJSON: Log WebSocket open
+        this.logEvent({ event: 'openai_ws_open' });
         this.sendSessionUpdate();
         resolve();
       });
@@ -233,9 +239,15 @@ ${fieldMapping}
         this.handleRealtimeEvent(data.toString());
       });
 
-      ws.on('close', async () => {
+      ws.on('close', async (code?: number, reason?: Buffer) => {
         this.connected = false;
         console.log('🤖 OpenAI Realtime session closed');
+        // NDJSON: Log WebSocket close
+        this.logEvent({
+          event: 'openai_ws_close',
+          close_code: code,
+          close_reason: reason?.toString('utf-8')
+        });
 
         // Phase 1 Refactor: Reservation creation is now handled in saveCallLogToSupabase -> finalizeReservation
       });
@@ -245,6 +257,12 @@ ${fieldMapping}
           message: err.message,
           name: err.name,
           stack: err.stack,
+        });
+        // NDJSON: Log WebSocket error
+        this.logEvent({
+          event: 'openai_ws_error',
+          error_message: err.message,
+          error_code: err.name
         });
         reject(err);
       });
@@ -295,6 +313,8 @@ ${fieldMapping}
       },
     };
     this.sendJson(payload);
+    // NDJSON: Log session update sent
+    this.logEvent({ event: 'session_update_sent' });
   }
 
   sendAudio(g711_ulaw: Buffer) {
@@ -306,6 +326,22 @@ ${fieldMapping}
       audio: g711_ulaw.toString('base64'),
     };
     this.sendJson(payload);
+  }
+
+  /**
+   * Track Twilio media event and log to NDJSON (sampled every 100 frames).
+   * Called from index.ts when media event is received.
+   */
+  trackTwilioMedia(payloadBytes: number): void {
+    this.mediaCount++;
+    // Log first frame and then every 100th frame
+    if (this.mediaCount === 1 || this.mediaCount % 100 === 0) {
+      this.logEvent({
+        event: 'twilio_media',
+        payload_bytes: payloadBytes,
+        media_count: this.mediaCount
+      });
+    }
   }
 
   /** Twilio へ音声を送り返すためのヘルパー */
@@ -336,15 +372,19 @@ ${fieldMapping}
 
       if (event.type === 'session.updated') {
         console.log('✅ [Session] session.update confirmed by API');
+        // NDJSON: Log session updated received
+        this.logEvent({ event: 'session_updated_received' });
         // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
         if (!this.hasRequestedInitialResponse) {
           console.log('✨ Session updated, requesting initial response');
           this.sendJson({
             type: 'response.create',
             response: {
-              modalities: ['text', 'audio'],
+              output_modalities: ['text', 'audio'],
             },
           });
+          // NDJSON: Log response.create sent (initial greeting)
+          this.logEvent({ event: 'response_create_sent', trigger: 'initial' });
           this.hasRequestedInitialResponse = true;
         }
       }
@@ -358,6 +398,16 @@ ${fieldMapping}
         const base64Mulaw = event.delta ?? event.audio?.data;
         if (base64Mulaw) {
           this.forwardAudioToTwilioFromBase64(base64Mulaw);
+          // NDJSON: Log audio_delta (sampled every 100 frames)
+          this.audioDeltaCount++;
+          if (this.audioDeltaCount === 1 || this.audioDeltaCount % 100 === 0) {
+            const bytes = Buffer.from(base64Mulaw, 'base64').length;
+            this.logEvent({
+              event: 'audio_delta',
+              delta_count: this.audioDeltaCount,
+              bytes_sent: bytes
+            });
+          }
         }
       }
 
@@ -391,14 +441,18 @@ ${fieldMapping}
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        console.log('🎤 ユーザー発話開始 (Barge-in)');
+        console.log('🎙️ ユーザー発話開始 (Barge-in)');
         this.isUserSpeaking = true;
+        // NDJSON: Log VAD speech started
+        this.logEvent({ event: 'vad_event', action: 'start' });
         this.options.onClearTwilio(); // Twilioのバッファをクリア
         this.sendJson({ type: 'response.cancel' }); // OpenAIの生成をキャンセル
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
         this.isUserSpeaking = false;
+        // NDJSON: Log VAD speech stopped
+        this.logEvent({ event: 'vad_event', action: 'stop' });
       }
 
       if (event.type === 'conversation.item.input_audio_transcription.completed') {
@@ -500,8 +554,10 @@ ${fieldMapping}
     // 4. Trigger response.create to continue conversation
     this.sendJson({
       type: 'response.create',
-      response: { modalities: ['text', 'audio'] }
+      response: { output_modalities: ['text', 'audio'] }
     });
+    // NDJSON: Log response.create sent (after tool call)
+    this.logEvent({ event: 'response_create_sent', trigger: 'tool' });
 
     console.log('📤 function_call_output sent, conversation continues');
   }
@@ -651,7 +707,7 @@ ${fieldMapping}
           }
         ],
         response_format: { type: 'json_object' },
-        max_tokens: 500,
+        max_completion_tokens: 500,
       });
 
       const content = completion.choices[0]?.message?.content?.trim();

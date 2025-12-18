@@ -198,6 +198,8 @@ wss.on('connection', (socket, req) => {
         context.debugObserver?.logTwilioMedia(data);
 
         const mulawPayload = Buffer.from(data.media.payload, 'base64');
+        // NDJSON: Track twilio_media (sampled)
+        context.realtime.trackTwilioMedia(mulawPayload.length);
         context.realtime.sendAudio(mulawPayload);
       }
 
