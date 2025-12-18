@@ -1177,7 +1177,9 @@ ${fieldMapping}
    */
   onTwilioMark(name?: string): void {
     if (!name) {
-      console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      if (config.debugMarkEvents) {
+        console.log('ℹ️ [Mark] Received undefined mark name, ignoring');
+      }
       return;
     }
 
@@ -1186,14 +1188,20 @@ ${fieldMapping}
       // Only update playedMsTotal if not in clearing state (Phase3: truncate handling)
       if (!this.clearing) {
         this.playedMsTotal = Math.max(this.playedMsTotal, markInfo.endMs);
-        console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        }
       } else {
-        console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        if (config.debugMarkEvents) {
+          console.log(`🏷️ [Mark] Ignored during clearing: ${name}`);
+        }
       }
       // Clean up processed mark
       this.markMap.delete(name);
     } else {
-      console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      if (config.debugMarkEvents) {
+        console.log(`⚠️ [Mark] Unknown mark received: ${name}`);
+      }
     }
   }
 
