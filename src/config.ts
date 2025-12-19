@@ -60,6 +60,11 @@ export const config = {
 
   // VAD tuning (lower = faster response, but more interruptions)
   vadSilenceDurationMs: parseInt(optionalEnv('VAD_SILENCE_DURATION_MS', '500')!, 10),
+
+  // Web Demo Authentication
+  webDemoSharedSecret: optionalEnv('WEB_DEMO_SHARED_SECRET'),
+  webDemoTokenExpirySeconds: parseInt(optionalEnv('WEB_DEMO_TOKEN_EXPIRY_SECONDS', '300')!, 10),
+  webDemoMaxSessionMinutes: parseInt(optionalEnv('WEB_DEMO_MAX_SESSION_MINUTES', '5')!, 10),
 };
 
 type Config = typeof config;

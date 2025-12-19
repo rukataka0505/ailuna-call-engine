@@ -9,6 +9,7 @@ import { TwilioMediaMessage } from './types';
 
 import { RealtimeSession } from './realtimeSession';
 import { DebugObserver } from './debugObserver';
+import { validateWebDemoToken } from './webDemoAuth';
 
 import { middleware as lineMiddleware } from '@line/bot-sdk';
 import { handleLineWebhook } from './lineWebhook';
@@ -265,10 +266,203 @@ wss.on('connection', (socket, req) => {
 
   socket.on('close', () => {
     console.log('🔚 Twilio media WebSocket closed');
+    // Cleanup any session associated with this socket (stop event may not have been sent)
+    for (const [streamSid, context] of calls.entries()) {
+      if (context.twilioSocket === socket) {
+        console.log(`🧹 Cleaning up Twilio session on socket close: ${streamSid}`);
+        context.realtime?.close();
+        calls.delete(streamSid);
+        break;
+      }
+    }
   });
 
   socket.on('error', (err) => {
     console.error('WebSocket error', err);
+  });
+});
+
+// ==================== Web Demo WebSocket Server ====================
+// Rate limiting: Track active sessions per userId
+const webDemoActiveSessions = new Map<string, { streamSid: string; startTime: number }>();
+
+const webDemoWss = new WebSocketServer({ server, path: '/web-demo-media' });
+
+webDemoWss.on('connection', (socket, req) => {
+  // Log connection without exposing token
+  const urlPath = req.url?.split('?')[0] || '/web-demo-media';
+  console.log(`🌐 Web demo WebSocket connected: ${urlPath}`);
+
+  // Extract and validate token
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const token = url.searchParams.get('token');
+
+  const validation = validateWebDemoToken(token || '');
+  if (!validation.valid || !validation.userId) {
+    console.warn(`🚫 Web demo connection rejected: ${validation.error}`);
+    socket.close(4001, validation.error || 'Invalid token');
+    return;
+  }
+
+  const userId = validation.userId;
+  console.log(`✅ Web demo authenticated for userId: ${userId.slice(0, 8)}...`);
+
+  // Rate limiting: Check if user already has an active session
+  const existingSession = webDemoActiveSessions.get(userId);
+  if (existingSession) {
+    console.warn(`🚫 Web demo rejected: userId ${userId.slice(0, 8)}... already has active session`);
+    socket.close(4002, 'Already has active session');
+    return;
+  }
+
+  let currentStreamSid: string | null = null;
+  let maxSessionTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const cleanup = () => {
+    if (maxSessionTimer) {
+      clearTimeout(maxSessionTimer);
+      maxSessionTimer = null;
+    }
+    if (currentStreamSid) {
+      const context = calls.get(currentStreamSid);
+      if (context) {
+        console.log(`🧹 Cleaning up web demo session: ${currentStreamSid}`);
+        context.realtime?.close();
+        calls.delete(currentStreamSid);
+      }
+      webDemoActiveSessions.delete(userId);
+      currentStreamSid = null;
+    }
+  };
+
+  socket.on('message', async (msg: WebSocket.RawData) => {
+    try {
+      const data = JSON.parse(msg.toString()) as TwilioMediaMessage;
+
+      if (data.event === 'start' && data.start) {
+        const { streamSid, callSid } = data.start;
+        // Ignore customParameters.userId - use token-derived userId
+        // Set callerNumber to null for demo mode
+
+        currentStreamSid = streamSid;
+        const logFile = createLogFilePath();
+        const debugObserver = new DebugObserver(streamSid);
+        const context: CallContext = {
+          streamSid,
+          logFile,
+          twilioSocket: socket,
+          debugObserver,
+        };
+        calls.set(streamSid, context);
+        webDemoActiveSessions.set(userId, { streamSid, startTime: Date.now() });
+
+        // Log start event
+        debugObserver.logTwilioMedia(data);
+        await writeLog(logFile, {
+          timestamp: new Date().toISOString(),
+          event: 'start',
+          streamSid,
+          callSid,
+        });
+
+        // Start max session timer
+        const maxMs = config.webDemoMaxSessionMinutes * 60 * 1000;
+        maxSessionTimer = setTimeout(() => {
+          console.log(`⏰ Web demo session timeout for ${streamSid}`);
+          socket.close(4003, 'Session timeout');
+        }, maxMs);
+
+        const realtime = new RealtimeSession({
+          streamSid,
+          callSid,
+          logFile,
+          toPhoneNumber: undefined, // Not applicable for web demo
+          fromPhoneNumber: undefined, // Demo mode: no caller number
+          userId,
+          debugObserver,
+          onAudioToTwilio: (base64Mulaw) => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({
+                event: 'media',
+                streamSid,
+                media: { payload: base64Mulaw },
+              }));
+            }
+          },
+          onClearTwilio: () => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({
+                event: 'clear',
+                streamSid,
+              }));
+            }
+          },
+          onMarkToTwilio: (name) => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({
+                event: 'mark',
+                streamSid,
+                mark: { name },
+              }));
+            }
+          },
+        });
+        context.realtime = realtime;
+        await realtime.connect();
+      }
+
+      if (data.event === 'media' && data.media && data.streamSid) {
+        const context = calls.get(data.streamSid);
+        if (!context?.realtime) return;
+
+        context.debugObserver?.logTwilioMedia(data);
+
+        if (config.enableBase64Passthrough) {
+          const payloadBase64 = data.media.payload;
+          const payloadBytes = Buffer.byteLength(payloadBase64, 'base64');
+          context.realtime.trackTwilioMedia(payloadBytes);
+          context.realtime.sendAudioBase64(payloadBase64);
+        } else {
+          const mulawPayload = Buffer.from(data.media.payload, 'base64');
+          context.realtime.trackTwilioMedia(mulawPayload.length);
+          context.realtime.sendAudio(mulawPayload);
+        }
+      }
+
+      if (data.event === 'mark' && data.streamSid) {
+        const context = calls.get(data.streamSid);
+        if (context) {
+          context.debugObserver?.logTwilioMedia(data);
+          context.realtime?.onTwilioMark(data.mark?.name);
+        }
+      }
+
+      if (data.event === 'stop' && data.streamSid) {
+        const context = calls.get(data.streamSid);
+        if (context) {
+          context.debugObserver?.logTwilioMedia(data);
+          await writeLog(context.logFile, {
+            timestamp: new Date().toISOString(),
+            event: 'stop',
+            streamSid: context.streamSid,
+          });
+        }
+        cleanup();
+      }
+    } catch (err) {
+      console.error('Failed to handle web demo message', err);
+      socket.close(4000, 'Message processing error');
+    }
+  });
+
+  socket.on('close', () => {
+    console.log('🔚 Web demo WebSocket closed');
+    cleanup();
+  });
+
+  socket.on('error', (err) => {
+    console.error('Web demo WebSocket error', err);
+    cleanup();
   });
 });
 
@@ -281,6 +475,9 @@ const gracefulShutdown = () => {
 
   // Close WebSocket connections to ensure fast shutdown
   wss.clients.forEach((client) => {
+    client.terminate();
+  });
+  webDemoWss.clients.forEach((client) => {
     client.terminate();
   });
 
