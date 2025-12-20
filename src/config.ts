@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -69,3 +70,8 @@ export const config = {
 
 type Config = typeof config;
 export type ConfigKey = keyof Config;
+
+// Startup debug: Log sha256 of WEB_DEMO_SHARED_SECRET for env mismatch debugging (never log actual secret)
+const secret = config.webDemoSharedSecret ?? '';
+const secretHash = crypto.createHash('sha256').update(secret, 'utf8').digest('hex');
+console.log(`WEB_DEMO_SHARED_SECRET sha256=${secretHash} len=${secret.length}`);
