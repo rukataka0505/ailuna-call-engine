@@ -3,6 +3,8 @@ import { config } from './config';
 
 const CLOCK_SKEW_TOLERANCE_SECONDS = 60; // ±60 seconds for clock drift
 
+let loggedSecretHash = false;
+
 export interface TokenValidationResult {
     valid: boolean;
     userId?: string;
@@ -20,6 +22,14 @@ export interface TokenValidationResult {
  * - base64url encoding to avoid URL encoding issues
  */
 export function validateWebDemoToken(token: string): TokenValidationResult {
+    // One-time debug log: sha256 of secret for env mismatch debugging (never log actual secret)
+    if (!loggedSecretHash) {
+        const s = config.webDemoSharedSecret ?? '';
+        const h = crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+        console.log(`WEB_DEMO_SHARED_SECRET sha256=${h} len=${s.length}`);
+        loggedSecretHash = true;
+    }
+
     if (!config.webDemoSharedSecret) {
         console.error('❌ WEB_DEMO_SHARED_SECRET not configured');
         return { valid: false, error: 'Server configuration error' };
