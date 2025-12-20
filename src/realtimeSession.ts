@@ -29,6 +29,8 @@ export interface RealtimeSessionOptions {
   onAudioToTwilio: (base64Mulaw: string) => void;
   onClearTwilio: () => void;
   onMarkToTwilio: (name: string) => void;
+  /** Callback for transcript events (user/AI speech to text) */
+  onTranscript?: (text: string, speaker: 'user' | 'ai', isFinal: boolean, turn: number) => void;
 }
 
 /**
@@ -587,12 +589,16 @@ ${jstNow}
 
       if (event.type === 'response.done') {
         const output = event.response?.output || [];
+        // Extract text from assistant messages only (skip function_call items)
         const textParts = output
-          .map((item: any) => item.content?.map((c: any) => c.text || c.transcript).join(''))
-          .filter((t: any) => t);
+          .filter((item: any) => item.type === 'message' && item.role === 'assistant')
+          .flatMap((item: any) => item.content || [])
+          .map((c: any) => c.text || c.transcript || '')
+          .filter((t: string) => t.trim());
         const text = textParts.join(' ');
 
-        if (text) {
+        // Only process if we have actual assistant text (not tool-only responses)
+        if (text.trim()) {
           // Timing: Record first message
           if (!this.timings.firstMessage) {
             this.timings.firstMessage = Date.now();
@@ -606,6 +612,9 @@ ${jstNow}
           });
           this.transcript.push({ role: 'assistant', text, timestamp: new Date().toISOString() });
           console.log(`🤖 AI応答 #${this.turnCount}: ${text}`);
+
+          // Emit transcript to WebSocket client (max 2000 chars)
+          this.options.onTranscript?.(text.slice(0, 2000), 'ai', true, this.turnCount);
         }
 
         // Function Call Detection
@@ -658,19 +667,21 @@ ${jstNow}
 
       if (event.type === 'conversation.item.input_audio_transcription.completed') {
         const text = event.transcript;
-        if (text) {
-          this.turnCount++;
-          this.logEvent({
-            event: 'user_utterance',
-            role: 'user',
-            text,
-            turn: this.turnCount
-          });
-          this.transcript.push({ role: 'user', text, timestamp: new Date().toISOString() });
-          console.log(`🗣️ ユーザー発話 #${this.turnCount}: ${text}`);
-          // Model handles conversation flow via create_response: true
-          // No manual state machine intervention needed
-        }
+        // Skip empty transcripts to avoid UI empty lines
+        if (!text?.trim()) return;
+
+        this.turnCount++;
+        this.logEvent({
+          event: 'user_utterance',
+          role: 'user',
+          text,
+          turn: this.turnCount
+        });
+        this.transcript.push({ role: 'user', text, timestamp: new Date().toISOString() });
+        console.log(`🗣️ ユーザー発話 #${this.turnCount}: ${text}`);
+
+        // Emit transcript to WebSocket client (max 2000 chars)
+        this.options.onTranscript?.(text.slice(0, 2000), 'user', true, this.turnCount);
       }
     } catch (err) {
       console.error('Failed to parse realtime event', err, raw);

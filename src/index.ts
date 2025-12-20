@@ -406,6 +406,22 @@ webDemoWss.on('connection', (socket, req) => {
               }));
             }
           },
+          onTranscript: (text, speaker, isFinal, turn) => {
+            // Send transcript to WebSocket client with try/catch for robustness
+            try {
+              if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                  event: 'transcript',
+                  text,
+                  speaker,
+                  isFinal,
+                  turn,
+                }));
+              }
+            } catch (err) {
+              // Ignore send errors (e.g., socket closing)
+            }
+          },
         });
         context.realtime = realtime;
         await realtime.connect();
