@@ -126,7 +126,7 @@ app.post('/incoming-call-realtime', async (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-const wss = new WebSocketServer({ server, path: '/twilio-media' });
+const wss = new WebSocketServer({ noServer: true });         // Twilio
 
 wss.on('connection', (socket, req) => {
   console.log('🔊 Twilio media WebSocket connected');
@@ -286,7 +286,28 @@ wss.on('connection', (socket, req) => {
 // Rate limiting: Track active sessions per userId
 const webDemoActiveSessions = new Map<string, { streamSid: string; startTime: number }>();
 
-const webDemoWss = new WebSocketServer({ server, path: '/web-demo-media' });
+const webDemoWss = new WebSocketServer({ noServer: true });  // Web demo
+
+// Manual upgrade routing: dispatch to appropriate WebSocketServer based on pathname
+server.on('upgrade', (req, socket, head) => {
+  try {
+    const { pathname } = new URL(req.url || '/', `http://${req.headers.host}`);
+
+    if (pathname === '/twilio-media') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+      return;
+    }
+
+    if (pathname === '/web-demo-media') {
+      webDemoWss.handleUpgrade(req, socket, head, (ws) => webDemoWss.emit('connection', ws, req));
+      return;
+    }
+
+    socket.destroy();
+  } catch {
+    socket.destroy();
+  }
+});
 
 webDemoWss.on('connection', (socket, req) => {
   // Log connection without exposing token
