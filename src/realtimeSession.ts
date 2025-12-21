@@ -195,9 +195,8 @@ export class RealtimeSession {
     console.log('✨ Loaded dynamic settings from Supabase');
 
     // Get greeting for initial response
-    const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
-    const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
-    this.initialGreeting = `${greeting} ${reservationGateQuestion}`;
+    // Get greeting for initial response
+    this.initialGreeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。ご予約のお電話でしょうか？';
 
     // Generate JST datetime (YYYY-MM-DD HH:mm JST)
     const now = new Date();
@@ -242,6 +241,7 @@ export class RealtimeSession {
 - 収集任意項目: ${optionalLabels.join('、') || 'なし'}
 - 必須項目を揃えたら短く復唱し「この内容を店舗に送信してよいか」を確認する
 - ユーザーが明確に了承した場合のみ finalize_reservation(confirmed:true) を呼ぶ
+- その後、情報を店舗に送信していることを伝える。
 - これは「予約確定」ではなく「店舗への申請送信」である
 - ツール結果に従う：
   - ok:true → 「店舗へ送信完了。店員確認後SMSで成否連絡」 (これ以外の文言は避ける)
