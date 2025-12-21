@@ -63,3 +63,18 @@ export interface RealtimeLogEvent {
   remaining_ms?: number;  // For barge_in_ignored
   phase?: 'greeting' | 'normal';  // For session_update_sent phase tracking
 }
+
+/**
+ * Represents a reservation form field configuration.
+ * Used for dynamic tool schema generation and validation.
+ */
+export interface ReservationField {
+  field_key: string;
+  label: string;
+  field_type: 'text' | 'number' | 'date' | 'time' | 'select';
+  required: boolean;
+  options?: string[];
+  description?: string;
+  display_order: number;
+  enabled: boolean;
+}

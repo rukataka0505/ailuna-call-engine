@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog, closeLogStream } from './logging';
-import { RealtimeLogEvent } from './types';
+import { RealtimeLogEvent, ReservationField } from './types';
 import { SUMMARY_SYSTEM_PROMPT } from './prompts';
 import { notificationService } from './notifications';
 import { DebugObserver } from './debugObserver';
@@ -17,6 +17,17 @@ const RESERVATION_SOURCE = {
   REALTIME_TOOL: 'phone_call_realtime_tool',
   REALTIME_FALLBACK: 'phone_call_realtime_fallback',
 } as const;
+
+/**
+ * Default reservation fields used when no DB configuration is found.
+ * Keys match the canonical columns in reservation_requests table.
+ */
+const DEFAULT_RESERVATION_FIELDS: ReservationField[] = [
+  { field_key: 'customer_name', label: 'お名前', field_type: 'text', required: true, display_order: 1, enabled: true },
+  { field_key: 'party_size', label: '人数', field_type: 'number', required: true, display_order: 2, enabled: true },
+  { field_key: 'requested_date', label: '希望日', field_type: 'date', required: true, display_order: 3, enabled: true },
+  { field_key: 'requested_time', label: '希望時間', field_type: 'time', required: true, display_order: 4, enabled: true },
+];
 
 export interface RealtimeSessionOptions {
   streamSid: string;
@@ -52,7 +63,7 @@ export class RealtimeSession {
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
   private initialGreeting: string = 'お電話ありがとうございます。ご予約のお電話でしょうか？';
   private hasRequestedInitialResponse = false;
-  private reservationFields: any[] = [];
+  private reservationFields: ReservationField[] = DEFAULT_RESERVATION_FIELDS;
 
   private reservationCreated = false; // Prevent duplicate reservations
   private audioDeltaCount = 0; // Counter for audio_delta sampling
