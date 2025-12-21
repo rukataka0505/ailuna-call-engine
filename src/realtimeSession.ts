@@ -85,6 +85,7 @@ export class RealtimeSession {
   private clearing = false; // Phase3: for truncate handling
   private bargeInDebounceTimer?: ReturnType<typeof setTimeout>;
   private isBargeInPending = false;  // Debounce pending flag
+  private conversationPhase: 'greeting' | 'normal' = 'greeting';  // Greeting phase control
 
   constructor(options: RealtimeSessionOptions) {
     this.startTime = Date.now();
@@ -306,7 +307,15 @@ export class RealtimeSession {
     });
   }
 
-  private sendSessionUpdate() {
+  /**
+   * Send session.update to OpenAI Realtime API.
+   * @param phase - 'greeting' disables create_response/interrupt_response to prevent AI-to-AI loops
+   */
+  private sendSessionUpdate(phase: 'greeting' | 'normal' = 'greeting') {
+    const isGreeting = phase === 'greeting';
+    this.conversationPhase = phase;
+    console.log(`🔄 [Session] Sending session.update (phase: ${phase}, create_response: ${!isGreeting}, interrupt_response: ${!isGreeting})`);
+
     // Always include finalize_reservation tool
     const toolsConfig = {
       tools: [{
@@ -338,8 +347,8 @@ export class RealtimeSession {
           threshold: 0.6,
           prefix_padding_ms: 300,
           silence_duration_ms: config.vadSilenceDurationMs,
-          create_response: true, // Always auto-respond via VAD
-          interrupt_response: true,
+          create_response: !isGreeting,     // Disable during greeting to prevent AI-to-AI loops
+          interrupt_response: !isGreeting,  // Disable during greeting to ensure full playback
         },
         input_audio_format: 'g711_ulaw',
         output_audio_format: 'g711_ulaw',
@@ -352,7 +361,7 @@ export class RealtimeSession {
     };
     this.sendJson(payload);
     // NDJSON: Log session update sent
-    this.logEvent({ event: 'session_update_sent' });
+    this.logEvent({ event: 'session_update_sent', phase });
     // Debug: Log system prompt length for troubleshooting
     console.log(`📝 [Debug] System prompt length: ${this.currentSystemPrompt.length} chars`);
     console.log(`📝 [Debug] Tools configured: finalize_reservation (tool_choice: auto)`);
@@ -569,6 +578,12 @@ export class RealtimeSession {
 
           // Emit transcript to WebSocket client (max 2000 chars)
           this.options.onTranscript?.(text.slice(0, 2000), 'ai', true, this.turnCount);
+
+          // Greeting phase completion: switch to normal mode after first assistant response
+          if (this.conversationPhase === 'greeting') {
+            console.log('✨ Greeting phase completed, switching to normal mode (create_response: true, interrupt_response: true)');
+            this.sendSessionUpdate('normal');
+          }
         }
 
         // Function Call Detection

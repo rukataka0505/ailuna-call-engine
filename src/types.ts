@@ -61,4 +61,5 @@ export interface RealtimeLogEvent {
   // Barge-in debounce event fields
   reason?: string;  // For barge_in_ignored / barge_in_cancelled
   remaining_ms?: number;  // For barge_in_ignored
+  phase?: 'greeting' | 'normal';  // For session_update_sent phase tracking
 }
