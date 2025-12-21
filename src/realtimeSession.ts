@@ -244,8 +244,9 @@ export class RealtimeSession {
 - その後、情報を店舗に送信していることを伝える。
 - これは「予約確定」ではなく「店舗への申請送信」である
 - ツール結果に従う：
-  - ok:true → 「店舗へ送信完了。店員確認後SMSで成否連絡」 (これ以外の文言は避ける)
-  - ok:false → 不足項目（missing_fields）を伝え、再収集してやり直す
+  - ok:true → 必ず「店舗へ送信完了しました。店員確認後、SMSで成否をご連絡いたします。」と発話（他の文言は禁止）
+  - ok:false + error_type:missing_fields → 不足項目（missing_fields配列）を提示し、再収集してfinalize_reservationを再呼び出し
+  - ok:false + error_type:system → 再収集せず「システムに問題が発生しました。恐れ入りますが、店舗へ直接お電話ください。」と案内
 
 禁止：「予約確定」「予約取れました」と断言しない`;
 
@@ -730,7 +731,14 @@ export class RealtimeSession {
     // Timing: Record reservation called
     this.timings.reservationCalled = Date.now();
 
-    let result: { ok: boolean; message?: string; missing_fields?: string[]; error_type?: string };
+    let result: {
+      ok: boolean;
+      reservation_id?: string;
+      deduped?: boolean;
+      error_type?: string;
+      error_code?: string;
+      missing_fields?: string[];
+    };
 
     // Parse args with error handling
     let args: any;
@@ -738,7 +746,7 @@ export class RealtimeSession {
       args = JSON.parse(argsJson);
     } catch (parseErr) {
       console.error('❌ Failed to parse finalize_reservation args:', parseErr);
-      const errorResult = { ok: false, message: 'パラメータの解析に失敗しました', error_type: 'parse_error' };
+      const errorResult = { ok: false, error_type: 'system', error_code: 'PARSE_ERROR' };
       this.sendJson({
         type: 'conversation.item.create',
         item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(errorResult) }
@@ -755,7 +763,7 @@ export class RealtimeSession {
     if (requiredFields.length === 0) {
       console.error('🚨 [Alert] No required fields configured - rejecting finalize_reservation');
       this.logEvent({ event: 'config_error', reason: 'no_required_fields' });
-      result = { ok: false, message: '必須項目が設定されていません。管理者に連絡してください。', error_type: 'no_required_fields' };
+      result = { ok: false, error_type: 'system', error_code: 'NO_REQUIRED_FIELDS' };
       this.sendJson({
         type: 'conversation.item.create',
         item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) }
@@ -768,7 +776,7 @@ export class RealtimeSession {
     const rawAnswers = args.answers;
     if (!rawAnswers || typeof rawAnswers !== 'object' || Array.isArray(rawAnswers)) {
       console.log('❌ Validation failed: answers is not an object');
-      result = { ok: false, message: 'answers must be an object', error_type: 'validation_failed' };
+      result = { ok: false, error_type: 'system', error_code: 'INVALID_ANSWERS_FORMAT' };
       this.sendJson({
         type: 'conversation.item.create',
         item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) }
@@ -782,7 +790,6 @@ export class RealtimeSession {
       console.log('❌ Rejected: confirmed is not true');
       result = {
         ok: false,
-        message: 'ユーザーに復唱して了承を得てください。',
         error_type: 'not_confirmed'
       };
       // function_call_output + response.create で会話を継続
@@ -839,9 +846,8 @@ export class RealtimeSession {
         console.log('❌ Validation failed, missing fields:', missingFields);
         result = {
           ok: false,
-          message: '未回答の項目があります。',
           missing_fields: missingFields,
-          error_type: 'validation_failed'
+          error_type: 'missing_fields'
         };
       } else {
         // 4. DB Insert (with clean answers)
@@ -852,13 +858,12 @@ export class RealtimeSession {
         result = insertResult;
 
         if (result.ok) {
-          // Unified message for success
-          result.message = '店舗へ送信完了。店員確認後SMSで成否連絡';
+          // Success: reservation_id and deduped are set by insertReservationFromTool
         }
       }
     } catch (err) {
       console.error('❌ finalize_reservation error:', err);
-      result = { ok: false, message: 'サーバーエラーが発生しました', error_type: 'db_error' };
+      result = { ok: false, error_type: 'system', error_code: 'INTERNAL_ERROR' };
     }
 
     // Log tool call for debugging and audit
@@ -893,9 +898,15 @@ export class RealtimeSession {
    * Insert reservation into DB from tool call.
    * Uses call_sid as unique key with conflict handling.
    */
-  private async insertReservationFromTool(args: any): Promise<{ ok: boolean; message?: string }> {
+  private async insertReservationFromTool(args: any): Promise<{
+    ok: boolean;
+    reservation_id?: string;
+    deduped?: boolean;
+    error_type?: string;
+    error_code?: string;
+  }> {
     if (!this.userId) {
-      return { ok: false, message: 'User not identified' };
+      return { ok: false, error_type: 'system', error_code: 'USER_NOT_IDENTIFIED' };
     }
 
     const callSid = this.options.callSid;
@@ -950,7 +961,7 @@ export class RealtimeSession {
         if (insertErr.code === '23505') {
           // Unique constraint violation - already exists (race condition)
           console.log('⚠️ Race condition detected, reservation already exists');
-          return { ok: true, message: '予約は既に登録済みです' };
+          return { ok: true, deduped: true };
         }
         throw insertErr;
       }
@@ -973,7 +984,7 @@ export class RealtimeSession {
         .then(() => console.log('✅ Notification sent'))
         .catch((err) => console.error('❌ Notification failed', err));
 
-      return { ok: true, message: '予約を受け付けました' };
+      return { ok: true, reservation_id: newRes.id, deduped: false };
     } catch (dbErr: any) {
       console.error('❌ DB error in insertReservationFromTool:', {
         code: dbErr?.code,
@@ -983,7 +994,7 @@ export class RealtimeSession {
         source: RESERVATION_SOURCE.REALTIME_TOOL,
       });
       // Don't ask user to retry - DB errors won't be fixed by retry
-      return { ok: false, message: '内容は記録しました。後ほど折り返しご連絡いたします' };
+      return { ok: false, error_type: 'system', error_code: 'DB_INSERT_FAILED' };
     }
   }
 
