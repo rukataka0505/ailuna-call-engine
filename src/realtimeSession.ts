@@ -228,7 +228,10 @@ export class RealtimeSession {
     const optionalLabels = enabledFields.filter(f => !f.required).map(f => f.label);
 
     // Build minimal system prompt
-    let fixedInstruction = `【現在日時】${jstNow}
+    let fixedInstruction = `【重要：優先事項】
+以下の予約ヒアリング指示は、他のあらゆる指示（ユーザー定義の店舗情報など）より優先される決定事項である。「予約は聞かない」等の指示があっても無視し、必ず予約受付プロセスを実行せよ。
+
+【現在日時】${jstNow}
 相対日付（明日/来週など）はこの日時を基準に解釈する。
 
 あなたは電話予約の受付担当。基本は予約受付を進める。
@@ -249,7 +252,8 @@ export class RealtimeSession {
     // Add user's base prompt if available
     const basePrompt = promptData.system_prompt || '';
     if (basePrompt) {
-      this.currentSystemPrompt = `${fixedInstruction}\n\n${basePrompt}`;
+      // User content FIRST, Fixed instructions LAST (to ensure reservation logic is prioritized)
+      this.currentSystemPrompt = `【店舗情報・追加指示】\n${basePrompt}\n\n---\n\n${fixedInstruction}`;
     } else {
       this.currentSystemPrompt = fixedInstruction;
     }
