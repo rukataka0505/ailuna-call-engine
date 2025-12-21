@@ -215,9 +215,16 @@ export class RealtimeSession {
 予約中に別の質問が来たら短く答え、その後予約の続きを進める。
 
 目的：
-- 次の情報を集める：customer_name, party_size, requested_date, requested_time
-- 送信前に内容を短く復唱し、ユーザーが明確に了承した場合のみ finalize_reservation を confirmed:true で呼ぶ
-- ok:true が返るまでは「予約確定」と言わない`;
+- 収集：customer_name, party_size, requested_date, requested_time（＋追加項目）
+- 送信前に短く復唱し「この内容を店舗に送信してよいか」を確認する
+- ユーザーが明確に了承した場合のみ finalize_reservation を confirmed:true で呼ぶ（これは予約の確定ではなく申請送信）
+- ツール結果に従う：
+  - ok:true → 「予約受付完了。店員確認後、SMSで成否連絡」
+  - ok:false → 不足項目（missing_fields）を伝え、再収集してやり直す`;
+
+
+    // 目的：の行以降を差し替え
+
 
     // 予約ヒアリング項目の取得（短い箇条書きで追加）
     try {
