@@ -57,4 +57,5 @@ export interface RealtimeLogEvent {
   close_reason?: string;
   action?: 'start' | 'stop';  // For vad_event
   trigger?: 'initial' | 'tool' | 'other';  // For response_create_sent
+  transcript_length?: number;  // For reservation_not_created alert
 }

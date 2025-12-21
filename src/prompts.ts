@@ -43,38 +43,6 @@ export const SUMMARY_SYSTEM_PROMPT = `あなたは電話応対の通話ログ要
 
 `;
 
-export const RESERVATION_EXTRACTION_SYSTEM_PROMPT = `あなたは通話ログから飲食店の予約情報を抽出するAIです。
-以下の通話内容から、お客様が「予約」を希望しているかどうかを判断し、
-予約希望の場合は詳細情報を抽出してJSON形式で出力してください。
-
-【入力情報】
-- 通話内容 (transcript)
-- 予約ヒアリング項目定義 (reservation_form_fields)
-
-【出力フォーマット (JSON)】
-{
-  "intent": "reservation" | "other", // 予約希望なら "reservation"、それ以外（問い合わせ、営業など）なら "other"
-  "customer_name": "抽出した名前" | null,
-  "customer_phone": "抽出した電話番号" | null, // 通話内で言及があれば抽出、なければ null
-  "party_size": 2 | null, // 人数 (数値)
-  "requested_date": "YYYY-MM-DD" | null, // 今年の日付として解釈
-  "requested_time": "HH:mm" | null, // 24時間表記
-  "requested_datetime_text": "明日のお昼12時" | null, // 原文のまま抽出
-  "answers": {
-    "field_key_1": "value",
-    "field_key_2": "value"
-  }, // reservation_form_fields に定義された項目への回答。keyは定義の field_key を使用
-  "confidence": 0.8 // 抽出の確信度 (0.0 - 1.0)
-}
-
-【抽出ルール】
-- 日付・時刻は現在日時を基準に解釈してください。
-- "party_size" は明確な人数がなければ null。
-- "answers" には、予約ヒアリング項目で定義された質問に対する回答を入れてください。
-- 予約完了・未完了に関わらず、お客様が予約の意思を示していれば intent: "reservation" としてください。
-- 明らかに予約とは関係ない電話（営業電話、間違い電話、単なる営業時間確認など）は intent: "other" としてください。
-`;
-
 export const MODE_CLASSIFICATION_PROMPT = `あなたは電話応答AIのモード判定エンジンです。
 ユーザーの第一声（または初期の数回のやり取り）から、この電話が「予約」に関するものか、それ以外（問い合わせなど）かを判定してください。
 

@@ -7,7 +7,7 @@ import Stripe from 'stripe';
 import { config } from './config';
 import { writeLog, closeLogStream } from './logging';
 import { RealtimeLogEvent } from './types';
-import { SUMMARY_SYSTEM_PROMPT, RESERVATION_EXTRACTION_SYSTEM_PROMPT } from './prompts';
+import { SUMMARY_SYSTEM_PROMPT } from './prompts';
 import { notificationService } from './notifications';
 import { DebugObserver } from './debugObserver';
 
@@ -50,6 +50,7 @@ export class RealtimeSession {
   private turnCount = 0;
 
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
+  private initialGreeting: string = 'お電話ありがとうございます。ご予約のお電話でしょうか？';
   private hasRequestedInitialResponse = false;
   private reservationFields: any[] = [];
 
@@ -189,8 +190,32 @@ export class RealtimeSession {
   private async applyPromptSettings(promptData: { system_prompt: string | null; config_metadata: any }): Promise<void> {
     console.log('✨ Loaded dynamic settings from Supabase');
 
-    // 予約ヒアリング項目の取得
-    let reservationInstruction = '';
+    // Get greeting for initial response
+    const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
+    const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
+    this.initialGreeting = `${greeting} ${reservationGateQuestion}`;
+
+    // Generate JST datetime (YYYY-MM-DD HH:mm JST)
+    const now = new Date();
+    const jstNow = new Intl.DateTimeFormat('ja-JP', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    }).format(now).replace(/\//g, '-') + ' JST';
+
+    // Build minimal system prompt
+    let fixedInstruction = `【現在日時】${jstNow}
+相対日付（明日/来週など）はこの日時を基準に解釈する。
+
+あなたは電話予約の受付担当。基本は予約受付を進める。
+予約中に別の質問が来たら短く答え、その後予約の続きを進める。
+
+目的：
+- 次の情報を集める：customer_name, party_size, requested_date, requested_time
+- 送信前に内容を短く復唱し、ユーザーが明確に了承した場合のみ finalize_reservation を confirmed:true で呼ぶ
+- ok:true が返るまでは「予約確定」と言わない`;
+
+    // 予約ヒアリング項目の取得（短い箇条書きで追加）
     try {
       const { data: formFields, error: formError } = await this.supabase
         .from('reservation_form_fields')
@@ -201,92 +226,18 @@ export class RealtimeSession {
 
       if (formFields && formFields.length > 0) {
         this.reservationFields = formFields;
-        const fieldMapping = formFields.map(f => {
-          const reqStr = f.required ? '(必須)' : '(任意)';
-          return `  - ${f.field_key}: ${f.label} ${reqStr}`;
+        const fieldList = formFields.map(f => {
+          const req = f.required ? 'required' : 'optional';
+          return `- ${f.label} (${f.field_key}) [${req}]`;
         }).join('\n');
-
-        reservationInstruction = `
-【予約ヒアリング項目】
-以下の情報を自然な会話の中で聞き出してください：
-${fieldMapping}
-
-【finalize_reservation ツールの使い方（重要）】
-- 必須項目（customer_name / party_size / requested_date / requested_time）および上記のヒアリング項目の必須項目が全て揃ったら、
-  すぐにツールは呼ばず、必ず「口頭で復唱確認」を行ってください。
-- 予約日時を復唱確認する際、「明日」「来週金曜」などは現在のJSTから計算して正確な日付に変換し、確認してください。
-
-【口頭確認テンプレ（この文言を必ず含める）】
-「ご予約内容を復唱します。お名前：{customer_name}、人数：{party_size}名、日時：{requested_date} {requested_time}、（任意項目があれば続ける）
-以上でお間違いないでしょうか？ よろしければ『はい』、修正があれば『いいえ』とお答えください。」
-
-【発話シーケンス（厳守）】
-1. ユーザーが『はい』『それでお願いします』など明確に了承した直後：
-   → まず「ではこの内容でご予約を送信します。少々お待ちください。」と発話
-   → その直後に finalize_reservation を confirmed:true で呼び出す
-
-2. ツール成功（ok:true）後：
-   → 「受付しました。予約の成否は後ほどSMSでお送りしますので、ご確認ください。」と発話
-
-3. ツール失敗（ok:false）後：
-   → 「申し訳ありません。送信に失敗しました。もう一度、確認からやり直します。」と発話
-   → 再度、復唱確認から仕切り直してください。
-
-- ユーザーが『いいえ』『違う』など否定した場合は、どこを修正するか聞き直して、再度この口頭確認を行ってください。
-
-【禁止事項】
-- finalize_reservation が ok:true を返すまで、「予約受付が完了しました」「承りました」等の確定表現は禁止。
-- 必須項目が揃っていない／ツール未実行の段階で会話を打ち切る発話（終了・お礼で締める等）をしない。
-- ツール呼び出し前に「送信します」以外の確定的な表現を使わない。
-
-【日付・時間の形式】
-- requested_date: YYYY-MM-DD（例：2025-12-20）
-- requested_time: HH:mm（例：19:00）
-- 「明日」「来週金曜」などは現在日時から計算して正確な日付に変換してください。
-
-【party_size について】
-- 必ず正の整数で指定してください（例：2）
-- 「2名」「2人」などは数値 2 に変換してください。
-`;
+        fixedInstruction += `\n\n追加項目：\n${fieldList}`;
       }
     } catch (err) {
       console.warn('⚠️ Failed to fetch reservation fields:', err);
     }
 
-    const greeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。';
-    const reservationGateQuestion = promptData.config_metadata?.reservation_gate_question || 'ご予約のお電話でしょうか？';
-
-    // Generate current JST datetime for relative date calculation
-    const jstNow = new Date().toLocaleString('ja-JP', {
-      timeZone: 'Asia/Tokyo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      weekday: 'long',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const fixedInstruction = `
-【現在日時（日本標準時）】
-${jstNow}
-※「明日」「来週金曜」などの相対日時はこの日時を基準に計算してください。
-
-【重要：第一声の指定】
-通話が開始された際、AIの「最初の発話」は必ず以下の文言を一言一句変えずに読み上げてください。
-発話内容：${greeting} ${reservationGateQuestion}
-
-【厳守事項】
-- 上記の「挨拶文 + 予約確認の問い」をセットで発話してください。
-- これ以外の言葉は付け足さないでください。
-- 一度ターンを終了して、相手の発言を待ってください。
-`;
-
-    let basePrompt = promptData.system_prompt || '';
-    if (reservationInstruction) {
-      basePrompt += `\n\n${reservationInstruction}`;
-    }
-
+    // Add user's base prompt if available
+    const basePrompt = promptData.system_prompt || '';
     if (basePrompt) {
       this.currentSystemPrompt = `${fixedInstruction}\n\n${basePrompt}`;
     } else {
@@ -518,11 +469,12 @@ ${jstNow}
         this.logEvent({ event: 'session_updated_received' });
         // 初回のみ response.create を送信して AI に最初の応答（挨拶）を促す
         if (!this.hasRequestedInitialResponse) {
-          console.log('✨ Session updated, requesting initial response');
+          console.log('✨ Session updated, requesting initial response with greeting');
           this.sendJson({
             type: 'response.create',
             response: {
               modalities: ['text', 'audio'],
+              instructions: `次の挨拶を行ってください：${this.initialGreeting}`
             },
           });
           // NDJSON: Log response.create sent (initial greeting)
@@ -700,11 +652,41 @@ ${jstNow}
     // Timing: Record reservation called
     this.timings.reservationCalled = Date.now();
 
-    let result: { ok: boolean; message?: string; missing_fields?: string[] };
+    let result: { ok: boolean; message?: string; missing_fields?: string[]; error_type?: string };
+
+    // Parse args with error handling
+    let args: any;
+    try {
+      args = JSON.parse(argsJson);
+    } catch (parseErr) {
+      console.error('❌ Failed to parse finalize_reservation args:', parseErr);
+      const errorResult = { ok: false, message: 'パラメータの解析に失敗しました', error_type: 'parse_error' };
+      this.sendJson({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(errorResult) }
+      });
+      this.sendJson({ type: 'response.create', response: { modalities: ['text', 'audio'] } });
+      return;
+    }
+
+    // Check confirmed flag first
+    if (args.confirmed !== true) {
+      console.log('❌ Rejected: confirmed is not true');
+      result = {
+        ok: false,
+        message: '口頭確認が完了していません。ユーザーに復唱して確認してください。',
+        error_type: 'not_confirmed'
+      };
+      // function_call_output + response.create で会話を継続
+      this.sendJson({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) }
+      });
+      this.sendJson({ type: 'response.create', response: { modalities: ['text', 'audio'] } });
+      return;
+    }
 
     try {
-      const args = JSON.parse(argsJson);
-
       // 1. Validation
       const missingFields: string[] = [];
 
@@ -735,7 +717,7 @@ ${jstNow}
 
       if (missingFields.length > 0) {
         console.log('❌ Validation failed, missing fields:', missingFields);
-        result = { ok: false, message: '必須項目が不足しています', missing_fields: missingFields };
+        result = { ok: false, message: '必須項目が不足しています', missing_fields: missingFields, error_type: 'validation_failed' };
       } else {
         // 2. DB Insert (with conflict handling)
         const insertResult = await this.insertReservationFromTool(args);
@@ -745,7 +727,7 @@ ${jstNow}
       }
     } catch (err) {
       console.error('❌ finalize_reservation error:', err);
-      result = { ok: false, message: 'サーバーエラーが発生しました' };
+      result = { ok: false, message: 'サーバーエラーが発生しました', error_type: 'db_error' };
     }
 
     // Log tool call for debugging and audit
@@ -887,136 +869,6 @@ ${jstNow}
       .map(item => `${item.role}: ${item.text}`)
       .join('\n');
   }
-
-  /**
-   * Fallback: LLMを使って会話ログから予約情報を抽出する
-   * finalize_reservation ツールがトリガーされなかった場合に使用
-   */
-  private async extractReservationFromTranscript(): Promise<{
-    intent: 'reservation' | 'other';
-    customer_name?: string;
-    party_size?: number;
-    requested_date?: string;
-    requested_time?: string;
-    requested_datetime_text?: string;
-    answers?: Record<string, any>;
-    confidence?: number;
-  } | null> {
-    if (this.transcript.length === 0) {
-      return null;
-    }
-
-    const formattedTranscript = this.formatTranscriptForSummary();
-    console.log('🔄 [Fallback] Extracting reservation from transcript...');
-
-    try {
-      const completion = await this.openai.chat.completions.create({
-        model: config.openAiSummaryModel,
-        messages: [
-          {
-            role: 'system',
-            content: RESERVATION_EXTRACTION_SYSTEM_PROMPT
-          },
-          {
-            role: 'user',
-            content: `【通話内容】\n${formattedTranscript}\n\n【現在日時】\n${new Date().toISOString()}`
-          }
-        ],
-        response_format: { type: 'json_object' },
-        max_completion_tokens: 500,
-      });
-
-      const content = completion.choices[0]?.message?.content?.trim();
-      if (!content) {
-        console.warn('⚠️ [Fallback] LLM returned empty content');
-        return null;
-      }
-
-      const extracted = JSON.parse(content);
-      console.log('📋 [Fallback] Extracted data:', JSON.stringify(extracted, null, 2));
-
-      return extracted;
-    } catch (err) {
-      console.error('❌ [Fallback] Failed to extract reservation:', err);
-      return null;
-    }
-  }
-
-  /**
-   * Fallback: 抽出された予約情報をDBに保存
-   */
-  private async saveReservationFallback(extracted: {
-    customer_name?: string;
-    party_size?: number;
-    requested_date?: string;
-    requested_time?: string;
-    requested_datetime_text?: string;
-    answers?: Record<string, any>;
-  }, callLogId: string): Promise<void> {
-    if (!this.userId) return;
-
-    const callSid = this.options.callSid;
-
-    // Check if reservation already exists for this call_sid
-    const { data: existing } = await this.supabase
-      .from('reservation_requests')
-      .select('id')
-      .eq('call_sid', callSid)
-      .single();
-
-    if (existing) {
-      console.log(`⚠️ [Fallback] Reservation already exists for call_sid ${callSid}, skipping`);
-      return;
-    }
-
-    try {
-      const { data: newRes, error: insertErr } = await this.supabase
-        .from('reservation_requests')
-        .insert({
-          user_id: this.userId,
-          call_sid: callSid,
-          call_log_id: callLogId,
-          customer_phone: this.callerNumber || 'Unknown',
-          customer_name: extracted.customer_name || 'Unknown',
-          requested_date: extracted.requested_date || null,
-          requested_time: extracted.requested_time || null,
-          party_size: extracted.party_size || null,
-          status: 'pending',
-          answers: extracted.answers || {},
-          source: RESERVATION_SOURCE.REALTIME_FALLBACK,
-          internal_note: `[LLM Fallback] ${extracted.requested_datetime_text || ''}`
-        })
-        .select()
-        .single();
-
-      if (insertErr) {
-        if (insertErr.code === '23505') {
-          console.log('⚠️ [Fallback] Race condition, reservation already exists');
-          return;
-        }
-        throw insertErr;
-      }
-
-      console.log('✅ [Fallback] Reservation created:', newRes.id);
-      this.reservationCreated = true;
-
-      // Send notification
-      await notificationService.notifyReservation({
-        user_id: this.userId,
-        customer_name: extracted.customer_name || 'Unknown',
-        customer_phone: this.callerNumber || 'Unknown',
-        party_size: extracted.party_size || 0,
-        requested_date: extracted.requested_date || '',
-        requested_time: extracted.requested_time || '',
-        requested_datetime_text: extracted.requested_datetime_text || '',
-        answers: extracted.answers || {}
-      });
-
-    } catch (err) {
-      console.error('❌ [Fallback] Failed to save reservation:', err);
-    }
-  }
-
   /**
    * Report call usage to Stripe for usage-based billing
    */
@@ -1176,22 +1028,13 @@ ${jstNow}
         // Just link the call_log_id to the existing reservation (if any)
         await this.linkCallLogToReservation(callLog.id);
 
-        // Fallback: If no reservation was created via tool, try to extract from transcript
+        // Fallback removed - just log warning if no reservation was created
         if (!this.reservationCreated) {
-          console.log('🔄 [Fallback] No reservation created via tool, attempting LLM extraction...');
-          const extracted = await this.extractReservationFromTranscript();
-
-          if (extracted && extracted.intent === 'reservation') {
-            // Only save if there's at least some useful info
-            if (extracted.customer_name || extracted.requested_date || extracted.party_size) {
-              console.log('📝 [Fallback] Reservation intent detected, saving to DB...');
-              await this.saveReservationFallback(extracted, callLog.id);
-            } else {
-              console.log('ℹ️ [Fallback] Reservation intent detected but insufficient data, skipping');
-            }
-          } else {
-            console.log('ℹ️ [Fallback] No reservation intent detected in conversation');
-          }
+          console.warn('⚠️ [Alert] Call ended without reservation being created via tool');
+          this.logEvent({
+            event: 'reservation_not_created',
+            transcript_length: this.transcript.length
+          });
         }
       }
     } catch (err) {
