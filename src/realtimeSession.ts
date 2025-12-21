@@ -83,6 +83,8 @@ export class RealtimeSession {
   private markSeq = 0;
   private lastMarkSentMs = 0; // Track when last mark was sent
   private clearing = false; // Phase3: for truncate handling
+  private bargeInDebounceTimer?: ReturnType<typeof setTimeout>;
+  private isBargeInPending = false;  // Debounce pending flag
 
   constructor(options: RealtimeSessionOptions) {
     this.startTime = Date.now();
@@ -588,33 +590,48 @@ export class RealtimeSession {
       }
 
       if (event.type === 'input_audio_buffer.speech_started') {
-        console.log('�️ ユーザー発話開始 (Barge-in)');
+        console.log('🎙️ ユーザー発話開始 (Barge-in検出)');
         // NDJSON: Log VAD speech started
         this.logEvent({ event: 'vad_event', action: 'start' });
 
-        // Set clearing state BEFORE sending clear to Twilio
-        // This prevents mark events during clearing from updating playedMsTotal
-        this.clearing = true;
-
-        // Clear Twilio's audio buffer immediately
-        this.options.onClearTwilio();
-
-        // Send truncate to OpenAI if we have an active assistant response
-        if (this.currentAssistantItemId) {
-          const endMs = this.playedMsTotal;
-          console.log(`✂️ [Truncate] item_id: ${this.currentAssistantItemId}, audio_end_ms: ${endMs}`);
-          this.sendJson({
-            type: 'conversation.item.truncate',
-            item_id: this.currentAssistantItemId,
-            content_index: 0,
-            audio_end_ms: endMs
-          });
+        // Check if AI is still actively speaking (has remaining audio to play)
+        const remainingMs = this.sentMsTotal - this.playedMsTotal;
+        if (remainingMs < config.bargeInMinRemainMs) {
+          console.log(`⏸️ Barge-in ignored: audio almost finished (${remainingMs}ms remaining < ${config.bargeInMinRemainMs}ms threshold)`);
+          this.logEvent({ event: 'barge_in_ignored', reason: 'audio_almost_finished', remaining_ms: remainingMs });
+          return;
         }
+
+        // Start debounce timer - don't immediately truncate
+        // Cancel any existing timer first
+        if (this.bargeInDebounceTimer) {
+          clearTimeout(this.bargeInDebounceTimer);
+        }
+        this.isBargeInPending = true;
+        console.log(`⏳ Barge-in debounce started (${config.bargeInDebounceMs}ms)`);
+
+        this.bargeInDebounceTimer = setTimeout(() => {
+          if (this.isBargeInPending) {
+            console.log('✅ Barge-in confirmed after debounce');
+            this.logEvent({ event: 'barge_in_confirmed' });
+            this.confirmBargeIn();
+          }
+          this.isBargeInPending = false;
+        }, config.bargeInDebounceMs);
       }
 
       if (event.type === 'input_audio_buffer.speech_stopped') {
         // NDJSON: Log VAD speech stopped
         this.logEvent({ event: 'vad_event', action: 'stop' });
+
+        // Cancel barge-in debounce timer if speech stopped before debounce completed (noise)
+        if (this.isBargeInPending && this.bargeInDebounceTimer) {
+          clearTimeout(this.bargeInDebounceTimer);
+          this.bargeInDebounceTimer = undefined;
+          this.isBargeInPending = false;
+          console.log('🔇 Barge-in cancelled: speech stopped before debounce (likely noise)');
+          this.logEvent({ event: 'barge_in_cancelled', reason: 'speech_stopped_before_debounce' });
+        }
       }
 
       if (event.type === 'conversation.item.input_audio_transcription.completed') {
@@ -844,6 +861,31 @@ export class RealtimeSession {
   }
 
   // =========================================================================
+
+  /**
+   * Execute actual barge-in after debounce delay has passed.
+   * Sets clearing state, clears Twilio buffer, and truncates OpenAI response.
+   */
+  private confirmBargeIn(): void {
+    // Set clearing state BEFORE sending clear to Twilio
+    // This prevents mark events during clearing from updating playedMsTotal
+    this.clearing = true;
+
+    // Clear Twilio's audio buffer immediately
+    this.options.onClearTwilio();
+
+    // Send truncate to OpenAI if we have an active assistant response
+    if (this.currentAssistantItemId) {
+      const endMs = this.playedMsTotal;
+      console.log(`✂️ [Truncate] item_id: ${this.currentAssistantItemId}, audio_end_ms: ${endMs}`);
+      this.sendJson({
+        type: 'conversation.item.truncate',
+        item_id: this.currentAssistantItemId,
+        content_index: 0,
+        audio_end_ms: endMs
+      });
+    }
+  }
 
   private sendJson(payload: any) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;

@@ -58,4 +58,7 @@ export interface RealtimeLogEvent {
   action?: 'start' | 'stop';  // For vad_event
   trigger?: 'initial' | 'tool' | 'other';  // For response_create_sent
   transcript_length?: number;  // For reservation_not_created alert
+  // Barge-in debounce event fields
+  reason?: string;  // For barge_in_ignored / barge_in_cancelled
+  remaining_ms?: number;  // For barge_in_ignored
 }
