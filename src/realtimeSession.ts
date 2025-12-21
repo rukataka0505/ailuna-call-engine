@@ -880,7 +880,13 @@ export class RealtimeSession {
       }
     });
 
-    console.log('📤 function_call_output sent, conversation continues');
+    // Trigger the model to generate next response based on tool result
+    this.sendJson({
+      type: 'response.create',
+      response: { modalities: ['text', 'audio'] }
+    });
+
+    console.log('📤 function_call_output sent, response.create triggered');
   }
 
   /**
