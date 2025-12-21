@@ -250,6 +250,7 @@ export class RealtimeSession {
 目的：
 - 収集必須項目: ${requiredLabels.join('、')}
 - 収集任意項目: ${optionalLabels.join('、') || 'なし'}
+これらの項目を一つ一つ順番に聞き、都度復唱して確認してください。  
 - 必須項目を揃えたら短く復唱し「この内容を店舗に送信してよいか」を確認する
 - ユーザーが明確に了承した場合のみ finalize_reservation(confirmed:true) を呼ぶ
 - その後、情報を店舗に送信していることを伝える。
