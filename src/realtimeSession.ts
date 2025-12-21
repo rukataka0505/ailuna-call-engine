@@ -207,6 +207,26 @@ export class RealtimeSession {
       hour: '2-digit', minute: '2-digit', hour12: false
     }).format(now).replace(/\//g, '-') + ' JST';
 
+    // 予約ヒアリング項目の取得
+    try {
+      const { data: formFields, error: formError } = await this.supabase
+        .from('reservation_form_fields')
+        .select('field_key, label, field_type, required, options, description, display_order, enabled')
+        .eq('user_id', this.userId)
+        .order('display_order', { ascending: true });
+
+      if (formFields && formFields.length > 0) {
+        this.reservationFields = formFields;
+      }
+    } catch (err) {
+      console.warn('⚠️ Failed to fetch reservation fields:', err);
+    }
+
+    // Dynamic field list generation (enabled !== false)
+    const enabledFields = this.reservationFields.filter(f => f.enabled !== false);
+    const requiredLabels = enabledFields.filter(f => f.required).map(f => f.label);
+    const optionalLabels = enabledFields.filter(f => !f.required).map(f => f.label);
+
     // Build minimal system prompt
     let fixedInstruction = `【現在日時】${jstNow}
 相対日付（明日/来週など）はこの日時を基準に解釈する。
@@ -215,37 +235,16 @@ export class RealtimeSession {
 予約中に別の質問が来たら短く答え、その後予約の続きを進める。
 
 目的：
-- 収集：customer_name, party_size, requested_date, requested_time（＋追加項目）
-- 送信前に短く復唱し「この内容を店舗に送信してよいか」を確認する
-- ユーザーが明確に了承した場合のみ finalize_reservation を confirmed:true で呼ぶ（これは予約の確定ではなく申請送信）
+- 収集必須項目: ${requiredLabels.join('、')}
+- 収集任意項目: ${optionalLabels.join('、') || 'なし'}
+- 必須項目を揃えたら短く復唱し「この内容を店舗に送信してよいか」を確認する
+- ユーザーが明確に了承した場合のみ finalize_reservation(confirmed:true) を呼ぶ
+- これは「予約確定」ではなく「店舗への申請送信」である
 - ツール結果に従う：
-  - ok:true → 「予約受付完了。店員確認後、SMSで成否連絡」
-  - ok:false → 不足項目（missing_fields）を伝え、再収集してやり直す`;
+  - ok:true → 「店舗へ送信完了。店員確認後SMSで成否連絡」 (これ以外の文言は避ける)
+  - ok:false → 不足項目（missing_fields）を伝え、再収集してやり直す
 
-
-    // 目的：の行以降を差し替え
-
-
-    // 予約ヒアリング項目の取得（短い箇条書きで追加）
-    try {
-      const { data: formFields, error: formError } = await this.supabase
-        .from('reservation_form_fields')
-        .select('field_key, label, field_type, required, options, description, display_order')
-        .eq('user_id', this.userId)
-        .eq('enabled', true)
-        .order('display_order', { ascending: true });
-
-      if (formFields && formFields.length > 0) {
-        this.reservationFields = formFields;
-        const fieldList = formFields.map(f => {
-          const req = f.required ? 'required' : 'optional';
-          return `- ${f.label} (${f.field_key}) [${req}]`;
-        }).join('\n');
-        fixedInstruction += `\n\n追加項目：\n${fieldList}`;
-      }
-    } catch (err) {
-      console.warn('⚠️ Failed to fetch reservation fields:', err);
-    }
+禁止：「予約確定」「予約取れました」と断言しない`;
 
     // Add user's base prompt if available
     const basePrompt = promptData.system_prompt || '';
@@ -324,23 +323,49 @@ export class RealtimeSession {
     this.conversationPhase = phase;
     console.log(`🔄 [Session] Sending session.update (phase: ${phase}, create_response: ${!isGreeting}, interrupt_response: ${!isGreeting})`);
 
-    // Always include finalize_reservation tool
+    // Build dynamic schema from reservation_form_fields
+    const answersProperties: Record<string, any> = {};
+    const requiredKeys: string[] = [];
+    const enabledFields = this.reservationFields.filter(f => f.enabled !== false);
+
+    for (const f of enabledFields) {
+      // Map field_type to JSON Schema type
+      let schemaType: any = { type: 'string', description: f.label };
+      if (f.field_type === 'number') {
+        schemaType = { type: 'integer', description: f.label };
+      } else if (f.field_type === 'date') {
+        schemaType = { type: 'string', description: `${f.label} (YYYY-MM-DD)` };
+      } else if (f.field_type === 'time') {
+        schemaType = { type: 'string', description: `${f.label} (HH:mm)` };
+      } else if (f.field_type === 'select' && f.options) {
+        schemaType = { type: 'string', enum: f.options, description: f.label };
+      }
+      answersProperties[f.field_key] = schemaType;
+      if (f.required) {
+        requiredKeys.push(f.field_key);
+      }
+    }
+
     const toolsConfig = {
       tools: [{
         type: 'function',
         name: 'finalize_reservation',
-        description: 'ユーザーが名前・日時・人数を全て伝え、予約確定の意思を示した場合にのみ呼び出してください。それまでは会話を続けてください。',
+        description: 'ユーザーが必須項目を全て伝え、送信の意思を示した場合に呼び出す。',
         parameters: {
           type: 'object',
           properties: {
-            customer_name: { type: 'string', description: 'お客様のお名前' },
-            party_size: { type: 'integer', description: '予約人数（正の整数）' },
-            requested_date: { type: 'string', description: '予約日（YYYY-MM-DD形式）' },
-            requested_time: { type: 'string', description: '予約時間（HH:mm形式）' },
-            answers: { type: 'object', description: '追加のヒアリング項目（field_key: value）' },
-            confirmed: { type: 'boolean', description: 'ユーザーが口頭で「はい」と明確に了承した場合のみ true' }
+            answers: {
+              type: 'object',
+              description: '収集した予約情報',
+              properties: answersProperties,
+              required: requiredKeys
+            },
+            confirmed: {
+              type: 'boolean',
+              description: 'ユーザーが口頭で「はい」と明確に了承した場合のみ true'
+            }
           },
-          required: ['customer_name', 'party_size', 'requested_date', 'requested_time', 'confirmed']
+          required: ['answers', 'confirmed']
         }
       }],
       tool_choice: 'auto'
@@ -718,12 +743,42 @@ export class RealtimeSession {
       return;
     }
 
-    // Check confirmed flag first
+    // 0. Filter enabled fields only (Handle undefined as enabled)
+    const enabledFields = this.reservationFields.filter(f => f.enabled !== false);
+    const requiredFields = enabledFields.filter(f => f.required);
+
+    // Server Guard: Reject if no required fields are configured
+    if (requiredFields.length === 0) {
+      console.error('🚨 [Alert] No required fields configured - rejecting finalize_reservation');
+      this.logEvent({ event: 'config_error', reason: 'no_required_fields' });
+      result = { ok: false, message: '必須項目が設定されていません。管理者に連絡してください。', error_type: 'no_required_fields' };
+      this.sendJson({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) }
+      });
+      this.sendJson({ type: 'response.create', response: { modalities: ['text', 'audio'] } });
+      return;
+    }
+
+    // 1. Check answers type STRICTLY (Wait for valid object)
+    const rawAnswers = args.answers;
+    if (!rawAnswers || typeof rawAnswers !== 'object' || Array.isArray(rawAnswers)) {
+      console.log('❌ Validation failed: answers is not an object');
+      result = { ok: false, message: 'answers must be an object', error_type: 'validation_failed' };
+      this.sendJson({
+        type: 'conversation.item.create',
+        item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) }
+      });
+      this.sendJson({ type: 'response.create', response: { modalities: ['text', 'audio'] } });
+      return;
+    }
+
+    // 2. Check confirmed flag STRICTLY
     if (args.confirmed !== true) {
       console.log('❌ Rejected: confirmed is not true');
       result = {
         ok: false,
-        message: '口頭確認が完了していません。ユーザーに復唱して確認してください。',
+        message: 'ユーザーに復唱して了承を得てください。',
         error_type: 'not_confirmed'
       };
       // function_call_output + response.create で会話を継続
@@ -736,43 +791,66 @@ export class RealtimeSession {
     }
 
     try {
-      // 1. Validation
+      // 3. Coercion & Validation
       const missingFields: string[] = [];
+      const cleanAnswers: Record<string, any> = {};
 
-      // Check required fields from reservation_form_fields (enabled && required)
-      const requiredFields = this.reservationFields.filter(f => f.enabled !== false && f.required);
-      for (const f of requiredFields) {
-        // Check in answers or top-level args
-        const val = args.answers?.[f.field_key] || args[f.field_key];
-        if (!val || String(val).trim() === '') {
-          missingFields.push(f.label);
+      for (const f of enabledFields) {
+        let val = rawAnswers[f.field_key];
+
+        // Coercion (Best Effort)
+        if (f.field_type === 'number') {
+          // "5" -> 5, "大人3名" -> 3 (simple parse)
+          const num = parseInt(String(val).replace(/[^\d]/g, ''), 10);
+          if (!isNaN(num)) val = num;
         }
-      }
 
-      // Validate party_size: must be positive integer
-      if (!args.party_size || args.party_size <= 0 || !Number.isInteger(args.party_size)) {
-        missingFields.push('party_size (正の整数が必要です)');
-      }
+        // Store cleaned value
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          cleanAnswers[f.field_key] = val;
+        }
 
-      // Validate requested_date: must be YYYY-MM-DD
-      if (!args.requested_date || !/^\d{4}-\d{2}-\d{2}$/.test(args.requested_date)) {
-        missingFields.push('requested_date (YYYY-MM-DD形式が必要です)');
-      }
+        // Validation (Required check)
+        if (f.required) {
+          const isEmpty = val === undefined || val === null || String(val).trim() === '';
+          if (isEmpty) {
+            missingFields.push(f.label);
+            continue; // Skip type check if empty
+          }
+        }
 
-      // Validate requested_time: must be HH:mm
-      if (!args.requested_time || !/^\d{2}:\d{2}$/.test(args.requested_time)) {
-        missingFields.push('requested_time (HH:mm形式が必要です)');
+        // Validation (Type check) - only if value exists
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          if (f.field_type === 'number' && typeof val !== 'number') {
+            missingFields.push(`${f.label} (数値形式)`);
+          } else if (f.field_type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(String(val))) {
+            missingFields.push(`${f.label} (YYYY-MM-DD形式)`);
+          } else if (f.field_type === 'time' && !/^\d{2}:\d{2}$/.test(String(val))) {
+            missingFields.push(`${f.label} (HH:mm形式)`);
+          }
+        }
       }
 
       if (missingFields.length > 0) {
         console.log('❌ Validation failed, missing fields:', missingFields);
-        result = { ok: false, message: '必須項目が不足しています', missing_fields: missingFields, error_type: 'validation_failed' };
+        result = {
+          ok: false,
+          message: '未回答の項目があります。',
+          missing_fields: missingFields,
+          error_type: 'validation_failed'
+        };
       } else {
-        // 2. DB Insert (with conflict handling)
-        const insertResult = await this.insertReservationFromTool(args);
+        // 4. DB Insert (with clean answers)
+        // Pass a merged object to insertReservation (keep args for fallback, but prefer answers)
+        const insertResult = await this.insertReservationFromTool({ ...args, answers: cleanAnswers });
         // Timing: Record DB done
         this.timings.reservationDbDone = Date.now();
         result = insertResult;
+
+        if (result.ok) {
+          // Unified message for success
+          result.message = '店舗へ送信完了。店員確認後SMSで成否連絡';
+        }
       }
     } catch (err) {
       console.error('❌ finalize_reservation error:', err);
@@ -788,7 +866,7 @@ export class RealtimeSession {
       result: JSON.stringify(result)
     });
 
-    // 3. Send function_call_output back to the model
+    // 5. Send function_call_output back to the model
     this.sendJson({
       type: 'conversation.item.create',
       item: {
@@ -797,16 +875,6 @@ export class RealtimeSession {
         output: JSON.stringify(result)
       }
     });
-
-    // 4. Trigger response.create to continue conversation
-    this.sendJson({
-      type: 'response.create',
-      response: { modalities: ['text', 'audio'] }
-    });
-    // NDJSON: Log response.create sent (after tool call)
-    this.logEvent({ event: 'response_create_sent', trigger: 'tool' });
-    // Timing: Record output sent
-    this.timings.reservationOutputSent = Date.now();
 
     console.log('📤 function_call_output sent, conversation continues');
   }
@@ -823,14 +891,31 @@ export class RealtimeSession {
     const callSid = this.options.callSid;
 
     // Build answers object (field_key -> value for DB, label -> value for notifications)
+    // Note: args.answers is already 'cleanAnswers' if coming from handleFinalizeReservation
+    const answers = args.answers || {};
     const dbAnswers: Record<string, any> = {};
     const notificationAnswers: Record<string, any> = {};
 
+    // Helper to get value from clean answers or top-level args (fallback)
+    const getValue = (key: string) => answers[key] || args[key] || null;
+
+    // Use reservationFields to map keys and labels
     for (const f of this.reservationFields) {
-      const val = args.answers?.[f.field_key] || args[f.field_key] || '';
-      dbAnswers[f.field_key] = val;
-      notificationAnswers[f.label] = val;
+      // Prioritize answers object, fallback to top-level for unknown fields
+      const val = answers[f.field_key] || args[f.field_key] || '';
+      if (val !== '') {
+        dbAnswers[f.field_key] = val;
+        notificationAnswers[f.label] = val;
+      }
     }
+
+    // Canonical columns derived from dynamic fields (or direct args)
+    const customerName = getValue('customer_name') || 'Unknown';
+    // party_size may be number or string, DB expects integer (or NULL). 
+    // It should be coerced already by handleFinalizeReservation if it was in fields.
+    const partySize = getValue('party_size');
+    const requestedDate = getValue('requested_date');
+    const requestedTime = getValue('requested_time');
 
     // Insert directly - rely on unique constraint (23505) for duplicate detection
     try {
@@ -840,12 +925,12 @@ export class RealtimeSession {
           user_id: this.userId,
           call_sid: callSid,
           customer_phone: this.callerNumber || 'Unknown',
-          customer_name: args.customer_name || 'Unknown',
-          requested_date: args.requested_date,
-          requested_time: args.requested_time,
-          party_size: args.party_size,
+          customer_name: customerName,
+          requested_date: requestedDate, // Can be NULL
+          requested_time: requestedTime, // Can be NULL
+          party_size: partySize,         // Can be NULL
           status: 'pending',
-          answers: dbAnswers,
+          answers: dbAnswers,            // Store full structure
           source: RESERVATION_SOURCE.REALTIME_TOOL
         })
         .select('id')
