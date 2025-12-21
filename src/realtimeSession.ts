@@ -86,6 +86,7 @@ export class RealtimeSession {
   private bargeInDebounceTimer?: ReturnType<typeof setTimeout>;
   private isBargeInPending = false;  // Debounce pending flag
   private conversationPhase: 'greeting' | 'normal' = 'greeting';  // Greeting phase control
+  private greetingAudioEndMs = 0;  // Track greeting audio length for playback-complete detection
 
   constructor(options: RealtimeSessionOptions) {
     this.startTime = Date.now();
@@ -579,10 +580,12 @@ export class RealtimeSession {
           // Emit transcript to WebSocket client (max 2000 chars)
           this.options.onTranscript?.(text.slice(0, 2000), 'ai', true, this.turnCount);
 
-          // Greeting phase completion: switch to normal mode after first assistant response
+          // Greeting phase: defer mode switch until playback completes
           if (this.conversationPhase === 'greeting') {
-            console.log('✨ Greeting phase completed, switching to normal mode (create_response: true, interrupt_response: true)');
-            this.sendSessionUpdate('normal');
+            // Record greeting audio length for playback-complete detection
+            this.greetingAudioEndMs = this.sentMsTotal;
+            console.log(`🎯 Greeting response.done received, waiting for playback (sentMsTotal: ${this.sentMsTotal}ms)`);
+            // Mode switch will happen in onTwilioMark when playedMsTotal catches up
           }
         }
 
@@ -608,6 +611,13 @@ export class RealtimeSession {
         console.log('🎙️ ユーザー発話開始 (Barge-in検出)');
         // NDJSON: Log VAD speech started
         this.logEvent({ event: 'vad_event', action: 'start' });
+
+        // Skip barge-in entirely during greeting phase to prevent self-pickup
+        if (this.conversationPhase === 'greeting') {
+          console.log('⏸️ Barge-in skipped: still in greeting phase');
+          this.logEvent({ event: 'barge_in_ignored', reason: 'greeting_phase' });
+          return;
+        }
 
         // Check if AI is still actively speaking (has remaining audio to play)
         const remainingMs = this.sentMsTotal - this.playedMsTotal;
@@ -1138,6 +1148,16 @@ export class RealtimeSession {
         this.playedMsTotal = Math.max(this.playedMsTotal, markInfo.endMs);
         if (config.debugMarkEvents) {
           console.log(`🏷️ [Mark] Acknowledged: ${name}, playedMsTotal: ${this.playedMsTotal}ms`);
+        }
+
+        // Check if greeting playback is complete - switch to normal mode
+        if (this.conversationPhase === 'greeting' && this.greetingAudioEndMs > 0) {
+          // Allow some margin (90% played) to account for mark timing variations
+          if (this.playedMsTotal >= this.greetingAudioEndMs * 0.9) {
+            console.log(`✨ Greeting playback completed (${this.playedMsTotal}ms / ${this.greetingAudioEndMs}ms), switching to normal mode`);
+            this.sendSessionUpdate('normal');
+            this.greetingAudioEndMs = 0;  // Reset to avoid re-triggering
+          }
         }
       } else {
         if (config.debugMarkEvents) {
