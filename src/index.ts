@@ -283,6 +283,10 @@ wss.on('connection', (socket, req) => {
 });
 
 // ==================== Web Demo WebSocket Server ====================
+// Demo call constants for call_logs database
+const DEMO_CALLER_NUMBER = 'デモ通話';
+const DEMO_RECIPIENT_NUMBER = 'WEB_DEMO';
+
 // Rate limiting: Track active sessions per userId
 const webDemoActiveSessions = new Map<string, { streamSid: string; startTime: number }>();
 
@@ -397,8 +401,8 @@ webDemoWss.on('connection', (socket, req) => {
           streamSid,
           callSid,
           logFile,
-          toPhoneNumber: undefined, // Not applicable for web demo
-          fromPhoneNumber: undefined, // Demo mode: no caller number
+          toPhoneNumber: DEMO_RECIPIENT_NUMBER,
+          fromPhoneNumber: DEMO_CALLER_NUMBER,
           userId,
           debugObserver,
           onAudioToTwilio: (base64Mulaw) => {

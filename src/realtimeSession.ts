@@ -394,7 +394,7 @@ export class RealtimeSession {
         instructions: this.currentSystemPrompt,
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.6,
+          threshold: config.vadThreshold,
           prefix_padding_ms: 300,
           silence_duration_ms: config.vadSilenceDurationMs,
           create_response: !isGreeting,     // Disable during greeting to prevent AI-to-AI loops
