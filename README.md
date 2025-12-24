@@ -1,4 +1,4 @@
-# ailuna-call-engine（最新版 / 2025-12-17）
+# ailuna-call-engine（最新版 / 2025-12-24）
 
 AiLuna の **電話応答エンジン**です。  
 Twilio Media Streams の音声を OpenAI Realtime API にブリッジし、通話ログを Supabase に保存します。
