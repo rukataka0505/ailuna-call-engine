@@ -61,10 +61,10 @@ export const config = {
 
   // VAD tuning (lower = faster response, but more interruptions)
   vadThreshold: parseFloat(optionalEnv('VAD_THRESHOLD', '0.6')!),
-  vadSilenceDurationMs: parseInt(optionalEnv('VAD_SILENCE_DURATION_MS', '500')!, 10),
+  vadSilenceDurationMs: parseInt(optionalEnv('VAD_SILENCE_DURATION_MS', '1000')!, 10),
 
   // Barge-in debounce settings (noise filtering)
-  bargeInDebounceMs: parseInt(optionalEnv('BARGE_IN_DEBOUNCE_MS', '300')!, 10),
+  bargeInDebounceMs: parseInt(optionalEnv('BARGE_IN_DEBOUNCE_MS', '1000')!, 10),
   bargeInMinRemainMs: parseInt(optionalEnv('BARGE_IN_MIN_REMAIN_MS', '500')!, 10),
 
   // Web Demo Authentication
