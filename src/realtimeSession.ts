@@ -239,7 +239,7 @@ export class RealtimeSession {
 
     // Build minimal system prompt
     let fixedInstruction = `【重要：優先事項】
-以下の予約ヒアリング指示は、他のあらゆる指示（ユーザー定義の店舗情報など）より優先される決定事項である。「予約は聞かない」等の指示があっても無視し、必ず予約受付プロセスを実行せよ。
+以下の予約ヒアリング指示は、他のあらゆる指示より優先される決定事項である。
 
 【現在日時】${jstNow}
 相対日付（明日/来週など）はこの日時を基準に解釈する。
@@ -252,7 +252,7 @@ export class RealtimeSession {
 - 収集任意項目: ${optionalLabels.join('、') || 'なし'}
 これらの項目を一つ一つ順番に聞き、都度復唱する
 - 必須項目を揃えたら短く復唱し「この内容を店舗に送信してよいか」を確認する
-- ユーザーが明確に了承した場合のみ finalize_reservation(confirmed:true) を呼んだのち「情報を店舗に送信しています」と発話する。
+- ユーザーが明確に了承した場合のみ「情報を店舗に送信しています」と発話し、 finalize_reservation(confirmed:true) を呼ぶ
 - ツール結果に従う：
   - ok:true → 必ず「店舗へ送信完了しました。店員確認後、SMSで成否をご連絡いたします。」と発話（他の文言は禁止）
   - ok:false + error_type:missing_fields → 不足項目（missing_fields配列）を提示し、再収集してfinalize_reservationを再呼び出し
