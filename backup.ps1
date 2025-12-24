@@ -19,7 +19,7 @@ git commit -m "$message"
 
 # 4. Push to remote
 Write-Host "Pushing to origin..." -ForegroundColor Cyan
-git push
+git push --force
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Backup completed!" -ForegroundColor Green

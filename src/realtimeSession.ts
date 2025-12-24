@@ -428,6 +428,13 @@ export class RealtimeSession {
 
   sendAudio(g711_ulaw: Buffer) {
     if (!this.connected || !this.ws) return;
+
+    // Ignore user audio during greeting phase to prevent VAD events and transcription noise
+    if (this.conversationPhase === 'greeting') {
+      this.logEvent({ event: 'user_audio_ignored', reason: 'greeting_phase' });
+      return;
+    }
+
     // Track audio for debug observability
     this.debugObserver.trackAudioSent(g711_ulaw.length);
     const payload = {
@@ -443,6 +450,13 @@ export class RealtimeSession {
    */
   sendAudioBase64(base64Mulaw: string) {
     if (!this.connected || !this.ws) return;
+
+    // Ignore user audio during greeting phase to prevent VAD events and transcription noise
+    if (this.conversationPhase === 'greeting') {
+      this.logEvent({ event: 'user_audio_ignored', reason: 'greeting_phase' });
+      return;
+    }
+
     // Track audio for debug observability (compute byte length from base64)
     this.debugObserver.trackAudioSent(Buffer.byteLength(base64Mulaw, 'base64'));
     const payload = {
@@ -636,6 +650,17 @@ export class RealtimeSession {
             console.log(`🎯 Greeting response.done received, waiting for playback (sentMsTotal: ${this.sentMsTotal}ms)`);
             // Mode switch will happen in onTwilioMark when playedMsTotal catches up
           }
+        }
+
+        // Send final mark to ensure playback tracking completes (prevents greeting phase from getting stuck)
+        // Marks are sent every 300ms during streaming, so the last fragment (<300ms) could be missed
+        if (this.currentAssistantItemId && this.sentMsTotal > this.lastMarkSentMs) {
+          this.markSeq++;
+          const markName = `a:${this.currentAssistantItemId}:ms:${this.sentMsTotal}:seq:${this.markSeq}`;
+          this.markMap.set(markName, { endMs: this.sentMsTotal });
+          this.options.onMarkToTwilio(markName);
+          this.lastMarkSentMs = this.sentMsTotal;
+          console.log(`📍 [PlaybackTracker] Final mark sent: ${this.sentMsTotal}ms`);
         }
 
         // Function Call Detection
