@@ -26,6 +26,7 @@ export const config = {
   openAiApiKey: requiredEnv('OPENAI_API_KEY'),
   openAiRealtimeModel: requiredEnv('OPENAI_REALTIME_MODEL', 'gpt-realtime'),
   openAiSummaryModel: requiredEnv('OPENAI_MODEL_MINI', 'gpt-5-mini'),
+  openAiRealtimeVoice: requiredEnv('OPENAI_REALTIME_VOICE', 'coral'),
   logDir: requiredEnv('LOG_DIR', path.join(process.cwd(), 'call_logs')),
   twilioAuthToken: requiredEnv('TWILIO_AUTH_TOKEN', ''), // Used? If empty, make sure it doesn't break unless used. Kept as required-ish with default empty for now if code depends on it being string.
   twilioAccountSid: requiredEnv('TWILIO_ACCOUNT_SID', ''),

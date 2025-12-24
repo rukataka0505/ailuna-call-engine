@@ -400,7 +400,7 @@ export class RealtimeSession {
         },
         input_audio_format: 'g711_ulaw',
         output_audio_format: 'g711_ulaw',
-        voice: 'coral',
+        voice: config.openAiRealtimeVoice,
         input_audio_transcription: {
           model: 'whisper-1',
         },
