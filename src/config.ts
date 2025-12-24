@@ -64,8 +64,8 @@ export const config = {
   vadSilenceDurationMs: parseInt(optionalEnv('VAD_SILENCE_DURATION_MS', '1000')!, 10),
 
   // Barge-in debounce settings (noise filtering)
-  bargeInDebounceMs: parseInt(optionalEnv('BARGE_IN_DEBOUNCE_MS', '1000')!, 10),
-  bargeInMinRemainMs: parseInt(optionalEnv('BARGE_IN_MIN_REMAIN_MS', '500')!, 10),
+  bargeInDebounceMs: parseInt(optionalEnv('BARGE_IN_DEBOUNCE_MS', '700')!, 10),
+  bargeInMinRemainMs: parseInt(optionalEnv('BARGE_IN_MIN_REMAIN_MS', '700')!, 10),
 
   // Web Demo Authentication
   webDemoSharedSecret: optionalEnv('WEB_DEMO_SHARED_SECRET'),
