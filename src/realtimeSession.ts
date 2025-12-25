@@ -260,10 +260,6 @@ export class RealtimeSession {
 これらの項目を一つ一つ順番に聞き、都度復唱する
 - 必須項目を揃えたら短く復唱し「この内容を店舗に送信してよいか」を確認する
 - ユーザーが明確に了承した場合のみ「情報を店舗に送信しています」と発話し、 finalize_reservation(confirmed:true) を呼ぶ
-- ツール結果に従う：
-  - ok:true → 必ず「店舗へ送信完了しました。店員確認後、SMSで成否をご連絡いたします。」と発話（他の文言は禁止）
-  - ok:false + error_type:missing_fields → 不足項目（missing_fields配列）を提示し、再収集してfinalize_reservationを再呼び出し
-  - ok:false + error_type:system → 再収集せず「システムに問題が発生しました。恐れ入りますが、店舗へ直接お電話ください。」と案内
 
 禁止：「予約確定」「予約取れました」と断言しない`;
 
@@ -933,13 +929,33 @@ export class RealtimeSession {
       }
     });
 
-    // Trigger the model to generate next response based on tool result
+    // Build instructions based on result
+    let responseInstructions: string;
+    if (result.ok) {
+      // Success: Fixed phrase, must be spoken exactly (one sentence only)
+      responseInstructions = `【厳守】次の1文のみを一字一句変えずに発話し、それ以外は何も言わないこと：
+「店舗へ送信完了しました。店員確認後、SMSで成否をご連絡いたします。」`;
+    } else if (result.error_type === 'missing_fields' && result.missing_fields) {
+      // Missing fields: List fields and prompt re-collection
+      const fieldList = result.missing_fields.join('、');
+      responseInstructions = `以下の項目が不足しています：${fieldList}
+これらを順番にお伺いし、揃ったら再度 finalize_reservation を呼び出してください。`;
+    } else {
+      // System error: Fixed error message
+      responseInstructions = `【厳守】次の1文のみを一字一句変えずに発話し、それ以外は何も言わないこと：
+「システムに問題が発生しました。恐れ入りますが、店舗へ直接お電話ください。」`;
+    }
+
+    // Trigger the model to generate next response with specific instructions
     this.sendJson({
       type: 'response.create',
-      response: { modalities: ['text', 'audio'] }
+      response: {
+        modalities: ['text', 'audio'],
+        instructions: responseInstructions
+      }
     });
 
-    console.log('📤 function_call_output sent, response.create triggered');
+    console.log('📤 function_call_output sent, response.create triggered with instructions');
   }
 
   /**
