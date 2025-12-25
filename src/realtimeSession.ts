@@ -62,6 +62,8 @@ export class RealtimeSession {
 
   private currentSystemPrompt: string = 'あなたは電話応対AIエージェントです。丁寧で簡潔な応答を心がけてください。';
   private initialGreeting: string = 'お電話ありがとうございます。ご予約のお電話でしょうか？';
+  private primaryLanguage: string = 'ja';           // config_metadata から読み込み
+  private nameKanaMode: 'auto' | 'skip' | 'always' = 'auto';  // config_metadata から読み込み
   private hasRequestedInitialResponse = false;
   private reservationFields: ReservationField[] = DEFAULT_RESERVATION_FIELDS;
 
@@ -208,6 +210,11 @@ export class RealtimeSession {
     // Get greeting for initial response
     // Get greeting for initial response
     this.initialGreeting = promptData.config_metadata?.greeting_message || 'お電話ありがとうございます。ご予約のお電話でしょうか？';
+
+    // Phase 1: Load config_metadata settings for kana collection feature
+    this.primaryLanguage = promptData.config_metadata?.primary_language || 'ja';
+    this.nameKanaMode = promptData.config_metadata?.name_kana_mode || 'auto';
+    console.log(`📋 [Config] primary_language=${this.primaryLanguage}, name_kana_mode=${this.nameKanaMode}`);
 
     // Generate JST datetime (YYYY-MM-DD HH:mm JST)
     const now = new Date();
@@ -840,6 +847,12 @@ export class RealtimeSession {
       // 3. Coercion & Validation
       const missingFields: string[] = [];
       const cleanAnswers: Record<string, any> = {};
+
+      // Allow customer_name_kana even if not in reservationFields (Phase 1 preparation)
+      if (rawAnswers['customer_name_kana']) {
+        cleanAnswers['customer_name_kana'] = rawAnswers['customer_name_kana'];
+        console.log(`📝 [Kana] customer_name_kana received: ${rawAnswers['customer_name_kana']}`);
+      }
 
       for (const f of enabledFields) {
         let val = rawAnswers[f.field_key];
