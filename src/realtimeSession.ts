@@ -100,6 +100,8 @@ export class RealtimeSession {
   private isBargeInPending = false;  // Debounce pending flag
   private conversationPhase: 'greeting' | 'normal' = 'greeting';  // Greeting phase control
   private greetingAudioEndMs = 0;  // Track greeting audio length for playback-complete detection
+  private awaitingFinalizeConsent = false;  // Phase 3: 送信確認待ち状態
+  private collectedAnswers: Record<string, any> = {};  // Phase 3: 収集済み回答を保持
 
   constructor(options: RealtimeSessionOptions) {
     this.startTime = Date.now();
@@ -244,6 +246,12 @@ export class RealtimeSession {
     const requiredLabels = enabledFields.filter(f => f.required).map(f => f.label);
     const optionalLabels = enabledFields.filter(f => !f.required).map(f => f.label);
 
+    // Phase 3: Add kana collection instruction for Japanese
+    let kanaInstruction = '';
+    if (this.primaryLanguage === 'ja' && this.nameKanaMode === 'auto') {
+      kanaInstruction = `\n- お名前が漢字やひらがなの場合、「カタカナでの表記もお願いできますか？」と任意で確認（強制しない）`;
+    }
+
     // Build minimal system prompt
     let fixedInstruction = `【重要：優先事項】
 以下の予約ヒアリング指示は、他のあらゆる指示より優先される決定事項である。
@@ -257,9 +265,9 @@ export class RealtimeSession {
 目的：
 - 収集必須項目: ${requiredLabels.join('、')}
 - 収集任意項目: ${optionalLabels.join('、') || 'なし'}
-これらの項目を一つ一つ順番に聞き、都度復唱する
-- 必須項目を揃えたら短く復唱し「この内容を店舗に送信してよいか」を確認する
-- ユーザーが明確に了承した場合のみ「情報を店舗に送信しています」と発話し、 finalize_reservation(confirmed:true) を呼ぶ
+これらの項目を一つ一つ順番に聞き、都度復唱する${kanaInstruction}
+- 必須項目を揃えたら短く復唱し、必ず次のフレーズで確認する：「この内容で店舗に送信してよろしいでしょうか？」
+- ユーザーの返答を待つ（finalize_reservationはまだ呼ばない）
 
 禁止：「予約確定」「予約取れました」と断言しない`;
 
@@ -644,6 +652,14 @@ export class RealtimeSession {
           // Emit transcript to WebSocket client (max 2000 chars)
           this.options.onTranscript?.(text.slice(0, 2000), 'ai', true, this.turnCount);
 
+          // Phase 3: Detect finalize consent request phrase
+          const CONSENT_PHRASE = '店舗に送信してよろしいでしょうか';
+          if (text.includes(CONSENT_PHRASE)) {
+            this.awaitingFinalizeConsent = true;
+            console.log('🔔 [Consent] Awaiting user confirmation for finalize');
+            this.logEvent({ event: 'consent_awaiting' });
+          }
+
           // Greeting phase: defer mode switch until playback completes
           if (this.conversationPhase === 'greeting') {
             // Record greeting audio length for playback-complete detection
@@ -751,6 +767,34 @@ export class RealtimeSession {
 
         // Emit transcript to WebSocket client (max 2000 chars)
         this.options.onTranscript?.(text.slice(0, 2000), 'user', true, this.turnCount);
+
+        // Phase 3: Check for consent response if awaiting
+        if (this.awaitingFinalizeConsent) {
+          const positivePatterns = ['はい', 'お願い', 'いいです', '大丈夫', 'オッケー', 'OK', 'ok', 'オーケー'];
+          const negativePatterns = ['いいえ', '違う', 'ちょっと', '待って', 'やめ', 'キャンセル', '訂正'];
+
+          const isPositive = positivePatterns.some(p => text.includes(p));
+          const isNegative = negativePatterns.some(p => text.includes(p));
+
+          if (isPositive && !isNegative) {
+            // User confirmed - trigger finalize via response.create
+            this.awaitingFinalizeConsent = false;
+            console.log('✅ [Consent] User confirmed, triggering finalize');
+            this.logEvent({ event: 'consent_confirmed' });
+            this.sendJson({
+              type: 'response.create',
+              response: {
+                modalities: ['text', 'audio'],
+                instructions: `ユーザーが明確に了承しました。「情報を店舗に送信しています」と発話し、直後に finalize_reservation(confirmed:true) を呼び出してください。収集済みの情報をすべて answers に含めてください。`
+              }
+            });
+          } else if (isNegative) {
+            this.awaitingFinalizeConsent = false;
+            console.log('❌ [Consent] User declined, resetting consent state');
+            this.logEvent({ event: 'consent_declined' });
+          }
+          // If neither clear positive nor negative, keep waiting
+        }
       }
     } catch (err) {
       console.error('Failed to parse realtime event', err, raw);
@@ -996,6 +1040,16 @@ export class RealtimeSession {
 
     // Canonical columns derived from dynamic fields (or direct args)
     const customerName = getValue('customer_name') || 'Unknown';
+    // Phase 3: Use kana for display_name if available (Japanese priority)
+    const customerNameKana = getValue('customer_name_kana');
+    const displayName = customerNameKana || customerName;
+
+    // Store original name in answers if kana is used
+    if (customerNameKana && customerName !== customerNameKana) {
+      dbAnswers['customer_name_original'] = customerName;
+      console.log(`📝 [Kana] Using kana for display: ${displayName} (original: ${customerName})`);
+    }
+
     // party_size may be number or string, DB expects integer (or NULL). 
     // It should be coerced already by handleFinalizeReservation if it was in fields.
     const partySize = getValue('party_size');
@@ -1010,7 +1064,7 @@ export class RealtimeSession {
           user_id: this.userId,
           call_sid: callSid,
           customer_phone: this.callerNumber || 'Unknown',
-          customer_name: customerName,
+          customer_name: displayName,  // Phase 3: Kana priority for notifications/display
           requested_date: requestedDate, // Can be NULL
           requested_time: requestedTime, // Can be NULL
           party_size: partySize,         // Can be NULL
